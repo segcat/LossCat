@@ -1,0 +1,56 @@
+# --- Visual Studio ---
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.VC.db
+*.VC.VC.opendb
+*.aps
+*.ncb
+*.sdf
+*.opensdf
+ipch/
+enc_temp_folder/
+
+# --- Build output ---
+x64/
+x86/
+[Dd]ebug/
+[Rr]elease/
+[Bb]uild/
+[Oo]ut/
+bin/
+obj/
+*.obj
+*.o
+*.pch
+*.ipch
+*.pdb
+*.idb
+*.ilk
+*.iobj
+*.ipdb
+*.exp
+*.lib
+*.exe
+*.dll
+*.log
+*.tlog
+*.lastbuildstate
+*.recipe
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# --- Local test media (keep audio files out of the repo) ---
+*.mp3
+*.flac
+*.wav
+*.ogg
+*.opus
+*.m4a

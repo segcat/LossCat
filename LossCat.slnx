@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+  </Configurations>
+  <Project Path="LossCat/LossCat.vcxproj" Id="ef3c3118-7df2-4f69-9c38-f7359ad275b3" />
+  <Project Path="LossCatCore/LossCatCore.vcxproj" Id="ee72759e-0757-4d53-9619-ae5bade40fc9" />
+</Solution>
