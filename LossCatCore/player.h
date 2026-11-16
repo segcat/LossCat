@@ -92,13 +92,13 @@ public:
 			ma_decoder_uninit(&decoder);
 			isLoaded = false;
 		}
-		done = false;
 		ma_decoder_config decoderConfig = ma_decoder_config_init(ma_format_f32, channels, sampleRate);
 		if (ma_decoder_init_file(path.c_str(), &decoderConfig, &decoder) != MA_SUCCESS)
 		{
 			printf("file open error \n");
 			return false;
 		}
+		done = false;
 		isLoaded = true;
 		return true;
 	}
