@@ -1,7 +1,7 @@
-#include "playback.h"
+#include "player.h"
 
 int main(int argc, char** argv)
 {
-	playback(argc, argv);
+	
 
 }
