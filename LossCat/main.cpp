@@ -1,60 +1,32 @@
-﻿#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <Windows.h>
-#include <d2d1.h>
-#include <wrl/client.h>
-#pragma comment(lib, "d2d1")
+#include "app.h"
+#include <shellapi.h>
 
-
-LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
-
-int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
+int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show)
 {
-	const wchar_t CLASS_NAME[] = L"LossCat";
-
-	WNDCLASS wc = {};
-	wc.lpfnWndProc = WindowProc;
-	wc.hInstance = hInstance;
-	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-	wc.lpszClassName = CLASS_NAME;
-	RegisterClass(&wc);
-
-	HWND hwnd = CreateWindowEx(
-		0, CLASS_NAME, L"LossCat", WS_OVERLAPPEDWINDOW,
-		CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
-		nullptr, nullptr, hInstance, nullptr);
-	if (hwnd == nullptr)
+	static App app;   
+	if (!app.create(inst, show))
 	{
-		return 0;
+		return 1;
 	}
 
-	ShowWindow(hwnd, nCmdShow);
+	int argc = 0;
+	LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+	std::vector<std::wstring> files;
+	for (int i = 1; argv && i < argc; ++i)
+	{
+		files.push_back(argv[i]);
+	}
+	LocalFree(argv);
+	if (!files.empty())
+	{
+		app.addFiles(files, true);
+	}
 
 	MSG msg = {};
-	while (GetMessage(&msg, nullptr, 0, 0) > 0)
+	while (GetMessageW(&msg, nullptr, 0, 0) > 0)
 	{
 		TranslateMessage(&msg);
-		DispatchMessage(&msg);
+		DispatchMessageW(&msg);
 	}
 	return 0;
-}
-
-LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
-{
-	switch (uMsg)
-	{
-	case WM_DESTROY:
-		PostQuitMessage(0);
-		return 0;
-
-	case WM_PAINT:
-	{
-		PAINTSTRUCT ps;
-		HDC hdc = BeginPaint(hwnd, &ps);
-		FillRect(hdc, &ps.rcPaint, (HBRUSH)(COLOR_WINDOW + 1));
-		EndPaint(hwnd, &ps);
-		return 0;
-	}
-	}
-	return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }

@@ -6,6 +6,25 @@
 #include <taglib/wavproperties.h>
 #include <taglib/aiffproperties.h>
 #include <taglib/mp4properties.h>
+#include <cstdlib>
+
+static bool readNumber(const TagLib::PropertyMap& tags, const char* key, float& out)
+{
+	auto it = tags.find(key);
+	if (it == tags.end() || it->second.isEmpty())
+	{
+		return false;
+	}
+	std::string text = it->second.front().to8Bit(true);
+	char* end = nullptr;
+	double value = std::strtod(text.c_str(), &end);
+	if (end == text.c_str())
+	{
+		return false;
+	}
+	out = static_cast<float>(value);
+	return true;
+}
 
 TrackInfo readTrackInfo(const std::string& path)
 {
@@ -55,6 +74,22 @@ TrackInfo readTrackInfo(const std::string& path)
 		info.coverData.assign(data.data(), data.data() + data.size());
 		info.coverMime = pic.value("mimeType").toString().to8Bit(true);
 	}
+	TagLib::PropertyMap tags = f.properties();
+	info.hasTrackGain = readNumber(tags, "REPLAYGAIN_TRACK_GAIN", info.trackGainDb);
+	readNumber(tags, "REPLAYGAIN_TRACK_PEAK", info.trackPeak);
+	info.hasAlbumGain = readNumber(tags, "REPLAYGAIN_ALBUM_GAIN", info.albumGainDb);
+	readNumber(tags, "REPLAYGAIN_ALBUM_PEAK", info.albumPeak);
+
+	for (const char* key : { "LYRICS", "UNSYNCEDLYRICS" })
+	{
+		auto it = tags.find(key);
+		if (it != tags.end() && !it->second.isEmpty())
+		{
+			info.lyrics = it->second.front().to8Bit(true);
+			break;
+		}
+	}
+
 	info.valid = true;
 	return info;
 }
