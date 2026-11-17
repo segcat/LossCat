@@ -54,3 +54,6 @@ desktop.ini
 *.ogg
 *.opus
 *.m4a
+
+# --- vcpkg ---
+vcpkg_installed/

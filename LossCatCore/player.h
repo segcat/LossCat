@@ -20,10 +20,6 @@ private:
 	ma_uint32 channels = 0;
 	ma_uint64 totalFrames = 0;
 	std::atomic<ma_uint64> framesPlayed{ 0 };
-	// file's real format, before the decoder converts it
-	ma_format srcFormat = ma_format_unknown;
-	ma_uint32 srcChannels = 0;
-	ma_uint32 srcSampleRate = 0;
 	static void data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount)
 	{
 		(void)pInput;
@@ -160,8 +156,6 @@ public:
 			totalFrames = 0;
 			framesPlayed = 0;
 			filePath.clear();
-			srcFormat = ma_format_unknown;
-			srcChannels = srcSampleRate = 0;
 			isLoaded = false;
 		}
 		if (isInit)
@@ -190,8 +184,6 @@ public:
 			totalFrames = 0;
 			framesPlayed = 0;
 			filePath.clear();
-			srcFormat = ma_format_unknown;
-			srcChannels = srcSampleRate = 0;
 			return false;
 		}
 		if (ma_decoder_get_length_in_pcm_frames(&decoder, &totalFrames) != MA_SUCCESS)
@@ -202,15 +194,6 @@ public:
 		done = false;
 		framesPlayed = 0;
 		filePath = path;
-		// open once more with no conversion (NULL config) just to read the native format
-		ma_decoder probe;
-		if (ma_decoder_init_file(path.c_str(), NULL, &probe) == MA_SUCCESS)
-		{
-			srcFormat = probe.outputFormat;
-			srcChannels = probe.outputChannels;
-			srcSampleRate = probe.outputSampleRate;
-			ma_decoder_uninit(&probe);
-		}
 		isLoaded = true;
 		state = State::Paused;
 		return true;
@@ -281,8 +264,5 @@ public:
 	ma_uint32 deviceSampleRate() const { return isInit ? device.playback.internalSampleRate : 0; }
 	ma_uint32 deviceChannels() const { return isInit ? device.playback.internalChannels : 0; }
 	const char* deviceFormatName() const { return isInit ? ma_get_format_name(device.playback.internalFormat) : ""; }
-	ma_uint32 sourceSampleRate() const { return srcSampleRate; }
-	ma_uint32 sourceChannels() const { return srcChannels; }
-	ma_uint32 sourceBits() const { return ma_get_bytes_per_sample(srcFormat) * 8; } // 24-bit files may show 32
-	bool isResampling() const { return srcSampleRate != 0 && srcSampleRate != sampleRate; }
+	ma_uint32 outputSampleRate() const { return sampleRate; }
 };
