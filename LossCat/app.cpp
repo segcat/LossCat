@@ -345,6 +345,7 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 		float x = GET_X_LPARAM(lp) / scale, y = GET_Y_LPARAM(lp) / scale;
 		pressHit = hitAt(x, y, &pressIndex);
 		if (editPlaylist >= 0 && pressHit != Hit::EditBox) commitRename();
+		if (searchFocused && pressHit != Hit::SearchField && pressHit != Hit::SearchClear) { searchFocused = false; InvalidateRect(hwnd, nullptr, FALSE); }
 		if (menuOpen && pressHit != Hit::MenuItem)
 		{
 			menuOpen = menuUp = menuLeft = false;
@@ -449,6 +450,21 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 		return 0;
 
 	case WM_CHAR:
+		if (searchFocused)
+		{
+			wchar_t c = (wchar_t)wp;
+			if (swallowSlash) { swallowSlash = false; if (c == L'/') return 0; }
+			if (c == L'\b') { if (!query.empty()) setQuery(query.substr(0, query.size() - 1)); }
+			else if (c == 127)   // Ctrl+Backspace: the last word
+			{
+				std::wstring q = query;
+				while (!q.empty() && q.back() == L' ') q.pop_back();
+				while (!q.empty() && q.back() != L' ') q.pop_back();
+				setQuery(q);
+			}
+			else if (c >= 32 && query.size() < 120) setQuery(query + c);
+			return 0;
+		}
 		if (editPlaylist >= 0)
 		{
 			wchar_t c = (wchar_t)wp;
@@ -464,6 +480,42 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 	{
 		if (editPlaylist >= 0) return 0;
 		bool ctrl = GetKeyState(VK_CONTROL) < 0;
+		if (searchFocused)
+		{
+			// typing goes to WM_CHAR; here only the keys that aren't characters
+			if (wp == VK_ESCAPE)
+			{
+				if (!query.empty()) setQuery(L"");
+				else searchFocused = false;
+			}
+			else if (wp == VK_RETURN || wp == VK_DOWN) searchFocused = false;   // done typing; keys work on the page again
+			else if (ctrl && wp == 'V')
+			{
+				if (OpenClipboard(hwnd))
+				{
+					if (HANDLE h = GetClipboardData(CF_UNICODETEXT))
+						if (const wchar_t* t = (const wchar_t*)GlobalLock(h))
+						{
+							std::wstring add = t;
+							GlobalUnlock(h);
+							for (wchar_t& ch : add) if (ch == L'\r' || ch == L'\n' || ch == L'\t') ch = L' ';
+							setQuery((query + add).substr(0, 120));
+						}
+					CloseClipboard();
+				}
+			}
+			else if (ctrl && wp == 'A') {}   // the whole query is the selection already; nothing to do
+			InvalidateRect(hwnd, nullptr, FALSE);
+			return 0;
+		}
+		if ((ctrl && wp == 'F') || (wp == VK_OEM_2 && !ctrl))   // Ctrl+F or /
+		{
+			searchFocused = true;
+			swallowSlash = !ctrl;
+			if (!query.empty() && page != Page::Search) { searchFrom = page; page = Page::Search; }
+			InvalidateRect(hwnd, nullptr, FALSE);
+			return 0;
+		}
 		if (confirmOpen)
 		{
 			if (wp == VK_RETURN) click(Hit::ConfirmOk, -1);
@@ -602,6 +654,17 @@ void App::click(Hit id, int index)
 		collapsed = !collapsed;
 		navStart = nowMs();
 		break;
+	case Hit::SearchField:
+		searchFocused = true;
+		if (!query.empty() && page != Page::Search) { searchFrom = page; page = Page::Search; }
+		break;
+	case Hit::SearchClear: setQuery(L""); searchFocused = true; break;
+	case Hit::SearchArtist: if (index >= 0 && index < (int)searchArtists.size()) openArtist(searchArtists[index]); break;
+	case Hit::SearchAlbum: if (index >= 0 && index < (int)searchAlbums.size()) { albumFromArtist = false; openAlbum(searchAlbums[index]); } break;
+	case Hit::SearchRow:
+		// play the songs found, starting at this one
+		if (index >= 0 && index < (int)searchSongs.size()) { queue = searchSongs; order.clear(); playIndex(index); }
+		break;
 	case Hit::NavNow: page = Page::Now; break;
 	case Hit::NavHome: page = Page::Home; pageScroll = 0; break;
 	case Hit::NavLibrary: page = Page::Library; pageScroll = 0; break;
@@ -614,6 +677,7 @@ void App::click(Hit id, int index)
 	case Hit::TilePlay:
 		if (page == Page::Artist && index >= 0 && index < (int)artistAlbums.size()) index = artistAlbums[index];
 		else if (page == Page::Home && index >= 0 && index < (int)recentlyAdded.size()) index = recentlyAdded[index];
+		else if (page == Page::Search) index = index >= 0 && index < (int)searchAlbums.size() ? searchAlbums[index] : -1;
 		if (index >= 0 && index < (int)albums.size()) playList(albums[index].tracks, 0);
 		break;
 	case Hit::GroupBack:
@@ -1347,6 +1411,95 @@ void App::setSort(int key)
 	InvalidateRect(hwnd, nullptr, FALSE);
 }
 
+// ---------------------------------------------------------------- search
+
+namespace
+{
+	// Does `hay` contain `needle`, ignoring case and accents ("bjork" finds "Björk")?
+	// Returns where, or -1.
+	int findIn(const std::wstring& hay, const std::wstring& needle)
+	{
+		if (needle.empty()) return 0;
+		if (hay.empty()) return -1;
+		return FindNLSStringEx(LOCALE_NAME_USER_DEFAULT, FIND_FROMSTART | LINGUISTIC_IGNORECASE | LINGUISTIC_IGNOREDIACRITIC,
+			hay.c_str(), (int)hay.size(), needle.c_str(), (int)needle.size(), nullptr, nullptr, nullptr, 0);
+	}
+	std::vector<std::wstring> words(const std::wstring& q)
+	{
+		std::vector<std::wstring> out;
+		std::wstring w;
+		for (wchar_t c : q)
+		{
+			if (c == L' ') { if (!w.empty()) out.push_back(w); w.clear(); }
+			else w += c;
+		}
+		if (!w.empty()) out.push_back(w);
+		return out;
+	}
+	// How well `text` matches: 3 starts with the query, 2 a word starts with it, 1 contains it, 0 no.
+	int score(const std::wstring& text, const std::wstring& q)
+	{
+		int at = findIn(text, q);
+		if (at < 0) return 0;
+		if (at == 0) return 3;
+		wchar_t before = text[at - 1];
+		return before == L' ' || before == L'(' || before == L'-' || before == L'/' || before == L'\'' ? 2 : 1;
+	}
+}
+
+void App::setQuery(const std::wstring& q)
+{
+	query = q;
+	bool blank = words(q).empty();
+	if (!blank && page != Page::Search) { searchFrom = page == Page::Search ? Page::Home : page; page = Page::Search; listScroll = 0; }
+	if (blank && page == Page::Search) page = searchFrom;
+	InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+void App::runSearch()
+{
+	if (searchedFor == query && searchedVer == plVersion) return;
+	searchedFor = query;
+	searchedVer = plVersion;
+	searchArtists.clear(); searchAlbums.clear(); searchSongIdx.clear(); searchSongs.clear();
+	std::vector<std::wstring> ws = words(query);
+	if (ws.empty()) return;
+	std::wstring whole;
+	for (const auto& w : ws) whole += (whole.empty() ? L"" : L" ") + w;
+
+	// Songs: every word must appear in the title, artist or album. Ranked by the best match on
+	// the whole query (title before artist before album), then library order.
+	std::vector<std::pair<int, int>> songs;
+	for (int i = 0; i < (int)libTracks.size(); ++i)
+	{
+		const Track& t = libTracks[i];
+		bool all = true;
+		for (const auto& w : ws)
+			if (findIn(t.title, w) < 0 && findIn(t.artist, w) < 0 && findIn(t.album, w) < 0) { all = false; break; }
+		if (!all) continue;
+		int s = std::max({ score(t.title, whole) * 3, score(t.artist, whole) * 2, score(t.album, whole) });
+		songs.push_back({ -s, i });
+	}
+	std::stable_sort(songs.begin(), songs.end(), [](auto& a, auto& b) { return a.first < b.first; });
+	for (auto& [s, i] : songs) { searchSongIdx.push_back(i); searchSongs.push_back(libTracks[i]); }
+
+	auto rank = [&](const std::vector<Group>& groups, std::vector<int>& out, bool withArtist) {
+		std::vector<std::pair<int, int>> found;
+		for (int k = 0; k < (int)groups.size(); ++k)
+		{
+			const Group& g = groups[k];
+			bool all = true;
+			for (const auto& w : ws)
+				if (findIn(g.name, w) < 0 && !(withArtist && findIn(g.artist, w) >= 0)) { all = false; break; }
+			if (all) found.push_back({ -(score(g.name, whole) * 2 + (withArtist ? score(g.artist, whole) : 0)), k });
+		}
+		std::stable_sort(found.begin(), found.end(), [](auto& a, auto& b) { return a.first < b.first; });
+		for (auto& [s, k] : found) out.push_back(k);
+	};
+	rank(artists, searchArtists, false);
+	rank(albums, searchAlbums, true);
+}
+
 void App::playFromLibrary(int i)
 {
 	if (i < 0 || i >= (int)libTracks.size()) return;
@@ -1428,6 +1581,7 @@ void App::openMenu(Hit target, int index, float x, float y)
 		case Hit::QueueRow: return index < (int)queue.size() ? queue[index].path : L"";
 		case Hit::PlaylistRow: { const auto& l = playlistTracks(openPlaylist); return index < (int)l.size() ? l[index].path : L""; }
 		case Hit::Cover: case Hit::AddToLibrary: case Hit::NowMore: return current >= 0 ? queue[current].path : L"";
+		case Hit::SearchRow: return index >= 0 && index < (int)searchSongs.size() ? searchSongs[index].path : L"";
 		case Hit::SmartRow: { std::vector<int> idx = smartTracks(); return index >= 0 && index < (int)idx.size() ? libTracks[idx[index]].path : L""; }
 		default: return L"";
 		}
@@ -1438,6 +1592,8 @@ void App::openMenu(Hit target, int index, float x, float y)
 		if (index == -2) return;
 		target = Hit::PlaylistNav;
 	}
+	if (target == Hit::SearchAlbum) { target = Hit::AlbumTile; index = index >= 0 && index < (int)searchAlbums.size() ? searchAlbums[index] : -1; }
+	if (target == Hit::SearchArtist) { target = Hit::ArtistTile; index = index >= 0 && index < (int)searchArtists.size() ? searchArtists[index] : -1; }
 	if (target == Hit::AddedTile) { target = Hit::AlbumTile; index = index >= 0 && index < (int)recentlyAdded.size() ? recentlyAdded[index] : -1; }
 	if (target == Hit::ArtistAlbum) { target = Hit::AlbumTile; index = index >= 0 && index < (int)artistAlbums.size() ? artistAlbums[index] : -1; }
 	if (target == Hit::TilePlay) return;

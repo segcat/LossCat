@@ -24,6 +24,7 @@ enum class Hit
 	Panel,           // background that swallows clicks (not a drag area)
 	QueueRow, QueueRemove, QueueClear, QueueUndo,
 	SortHeader, SortMenu,
+	SearchField, SearchClear, SearchArtist, SearchAlbum, SearchRow,
 	LibraryRow,
 	OpenLibraryFolder, ChangeLibraryFolder, AddMusicFolder, RemoveMusicFolder, OpenMusicFolder, ShowHidden,
 	LibTabAlbums, LibTabArtists, LibTabSongs,
@@ -51,7 +52,7 @@ enum class Hit
 	GroupBack, GroupPlay, GroupShuffle, AlbumRow, AlbumCover, AlbumArtist, ArtistAlbum,
 };
 
-enum class Page { Home, Now, Library, Settings, Playlist, License, Album, Artist, Smart };
+enum class Page { Home, Now, Library, Settings, Playlist, License, Album, Artist, Smart, Search };
 
 struct Track
 {
@@ -146,6 +147,20 @@ private:
 	const std::vector<Track>& sortedSongs();
 	void setSort(int key);                 // a header click: new column ascending (newest first for dates), same column flips
 	Rect sortButton;
+
+	// ---- search: the field at the top of the main panel, results on Page::Search
+	std::wstring query;
+	bool searchFocused = false, swallowSlash = false;
+	Page searchFrom = Page::Home;          // where to go back to when the search is cleared
+	std::vector<int> searchArtists, searchAlbums, searchSongIdx;   // indices into artists / albums / libTracks
+	std::vector<Track> searchSongs;
+	std::wstring searchedFor;              // the query the results above belong to
+	long long searchedVer = -1;
+	void runSearch();
+	void setQuery(const std::wstring& q);
+	void drawSearchField();
+	void drawSearch(const Rect& area);
+	Rect gearRect;
 	void hot(const Rect& r, Hit id, int index = -1);
 	bool hovered(Hit id, int index = -1) const { return hoverHit == id && (index < 0 || hoverIndex == index); }
 	bool pressed(Hit id, int index = -1) const { return pressHit == id && hovered(id, index); }
