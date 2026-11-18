@@ -27,6 +27,7 @@ namespace icons
 	const char* plus = "M12 5v14M5 12h14";
 	const char* heart = "M12 20l-1.3-1.2C6 14.6 3 11.9 3 8.6 3 5.9 5.1 3.9 7.7 3.9c1.6 0 3.1.7 4.3 1.9 1.2-1.2 2.7-1.9 4.3-1.9 2.6 0 4.7 2 4.7 4.7 0 3.3-3 6-7.7 10.2z";
 	const char* note = "M9 18V6l10-2v12M9 18a2.5 2.5 0 1 1-5 0 2.5 2.5 0 1 1 5 0ZM19 16a2.5 2.5 0 1 1-5 0 2.5 2.5 0 1 1 5 0Z";
+	const char* search = "M18 11A7 7 0 1 1 4 11A7 7 0 1 1 18 11ZM20 20l-3.5-3.5";
 	const char* gear = "M15 12A3 3 0 1 1 9 12A3 3 0 1 1 15 12ZM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z";
 	const char* shuffle = "M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5";
 	const char* prev = "M19 19L9 12l10-7zM6 5h1.2a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z";
@@ -532,6 +533,7 @@ void App::drawWindowControls(const Rect& p)
 	else if (hovered(Hit::Settings)) g.fill(gear, col::ctlHover, 3);
 	g.icon(icons::gear, { gear.cx() - 8, gear.cy() - 8, 16, 16 }, on ? col::white : col::soft, false);
 	hot(gear, Hit::Settings);
+	gearRect = gear;
 }
 
 void App::drawMain()
@@ -572,10 +574,110 @@ void App::drawMain()
 	case Page::License: drawLicense(area); break;
 	case Page::Now: drawNowPlaying(area); break;
 	case Page::Settings: drawSettings(area); break;
+	case Page::Search: drawSearch(area); break;
 	}
 	g.popClip();
+	drawSearchField();
 
 	g.popClip();
+}
+
+static void sectionTitle(Gfx& g, const wchar_t* s, float x, float y, float w);
+
+void App::drawSearchField()
+{
+	// Centred in the main panel's top strip, up to 460 wide, clear of the collapsed-sidebar
+	// icons on the left and the gear on the right.
+	const Rect& p = mainPanel;
+	float left = p.x + (navGeo > 0.01f ? 38 + 3 * 38 + 16 : 32);
+	float right = (gearRect.w > 0 ? gearRect.x : p.right() - 140) - 16;
+	float w = std::min(460.0f, right - left);
+	if (w < 160) return;
+	float x = std::max(left, std::min(p.cx() - w / 2, right - w));
+	Rect r{ x, p.y + 16, w, 32 };
+	bool hov = hovered(Hit::SearchField) || hovered(Hit::SearchClear);
+	float f = anim(Hit::SearchField, -1, searchFocused);
+	g.fill(r, 0x1D1D1D, 3);
+	if (f > 0.01f) g.fill(r, 0x202020, 3, f);
+	g.stroke(r, searchFocused ? 0x5A5A5A : hov ? 0x3A3A3A : 0x2B2B2B, 3);
+	g.icon(icons::search, { r.x + 12, r.cy() - 8, 16, 16 }, 0xA3A3A3, false, 2.0f);
+	Rect tr{ r.x + 38, r.y, r.w - 38 - 34, r.h };
+	if (query.empty())
+	{
+		g.text(L"Search songs, albums, artists", tr, 13, Font::Ui, 0x858585);
+		if (searchFocused) g.fill({ tr.x, r.cy() - 8, 1.5f, 16 }, col::text);
+	}
+	else
+	{
+		// a long query shows its end, where you're typing
+		float qw = g.textWidth(query, 13, Font::Ui);
+		g.pushClip(tr);
+		g.text(query, { qw > tr.w ? tr.right() - qw - 2 : tr.x, r.y, qw + 4, r.h }, 13, Font::Ui, col::text);
+		g.popClip();
+		if (searchFocused) g.fill({ std::min(tr.x + qw + 1, tr.right()), r.cy() - 8, 1.5f, 16 }, col::text);
+	}
+	hot(r, Hit::SearchField);
+	if (!query.empty())
+	{
+		Rect cb{ r.right() - 30, r.cy() - 12, 24, 24 };
+		bool ch = hovered(Hit::SearchClear);
+		if (ch) g.fill(cb, col::ctlHover, 3);
+		g.icon(icons::close, { cb.cx() - 6, cb.cy() - 6, 12, 12 }, ch ? col::text : 0x858585, false, 1.6f);
+		hot(cb, Hit::SearchClear);
+	}
+}
+
+void App::drawSearch(const Rect& a)
+{
+	listArea = {};
+	pageArea = a;
+	runSearch();
+	float y = a.y;
+	if (searchSongs.empty() && searchAlbums.empty() && searchArtists.empty())
+	{
+		g.text(L"Nothing in your library matches “" + query + L"”", { a.x + 6, y, a.w - 12, 24 }, 15, Font::UiMedium, col::text);
+		g.text(L"Search looks at titles, artists and albums. Check the spelling, or try fewer words.", { a.x + 6, y + 30, a.w - 12, 20 }, 13, Font::Ui, col::dim);
+		return;
+	}
+	const std::wstring* playing = current >= 0 ? &queue[current].path : nullptr;
+	// One row each of artists and albums, as many as fit across; the songs fill the rest.
+	auto fit = [&](bool round) {
+		float minW = round ? 110.0f : 140.0f, gap = round ? 20.0f : 8.0f;
+		return std::max(1, (int)((a.w + gap) / (minW + gap)));
+	};
+	if (!searchArtists.empty() && a.h > 420)
+	{
+		sectionTitle(g, L"Artists", a.x, y, a.w);
+		y += 34;
+		std::vector<Tile> tiles;
+		for (size_t i = 0; i < searchArtists.size() && (int)i < fit(true); ++i)
+		{
+			const Group& ar = artists[searchArtists[i]];
+			tiles.push_back({ ar.name, L"", libTracks[ar.tracks.front()].path });
+		}
+		y += drawTiles(tiles, a.x, y, a.w, Hit::SearchArtist, true) + 22;
+	}
+	if (!searchAlbums.empty() && a.h > 320)
+	{
+		sectionTitle(g, L"Albums", a.x, y, a.w);
+		y += 34;
+		std::vector<Tile> tiles;
+		for (size_t i = 0; i < searchAlbums.size() && (int)i < fit(false); ++i)
+		{
+			const Group& al = albums[searchAlbums[i]];
+			bool on = false;
+			for (int t : al.tracks) if (playing && *playing == libTracks[t].path) on = true;
+			tiles.push_back({ al.name, al.artist, libTracks[al.tracks.front()].path, on });
+		}
+		y += drawTiles(tiles, a.x, y, a.w, Hit::SearchAlbum, false) + 22;
+	}
+	if (!searchSongs.empty())
+	{
+		std::wstring head = searchSongs.size() == 1 ? L"Songs" : L"Songs · " + std::to_wstring(searchSongs.size());
+		sectionTitle(g, head.c_str(), a.x, y, a.w);
+		y += 34;
+		drawTrackRows({ a.x, y, a.w, a.bottom() - y }, searchSongs, Hit::SearchRow);
+	}
 }
 
 void App::hotVisible(const Rect& r, Hit id, int index)
@@ -722,7 +824,7 @@ float App::drawTiles(const std::vector<Tile>& tiles, float x, float y, float w, 
 		const Tile& t = tiles[i];
 		Rect r{ x + (i % cols) * (tw + gap), y + (i / cols) * (th + (round ? 0 : gap)), tw, th };
 		if (r.bottom() < pageArea.y || r.y > pageArea.bottom()) continue;
-		bool hov = hovered(hit, i) || ((hit == Hit::AlbumTile || hit == Hit::ArtistAlbum || hit == Hit::AddedTile) && hovered(Hit::TilePlay, i));
+		bool hov = hovered(hit, i) || ((hit == Hit::AlbumTile || hit == Hit::ArtistAlbum || hit == Hit::AddedTile || hit == Hit::SearchAlbum) && hovered(Hit::TilePlay, i));
 		float ha = anim(hit, i, hov);
 		if (ha > 0.01f && !round) g.fill(r, col::hover, 4, ha);
 		Rect img{ r.x + pad, r.y + pad, tw - 2 * pad, tw - 2 * pad };
@@ -766,7 +868,7 @@ float App::drawTiles(const std::vector<Tile>& tiles, float x, float y, float w, 
 				}
 			}
 			g.stroke(img, 0x313131, 2, 1, 0.6f);
-			if (hov && (hit == Hit::AlbumTile || hit == Hit::ArtistAlbum || hit == Hit::AddedTile))
+			if (hov && (hit == Hit::AlbumTile || hit == Hit::ArtistAlbum || hit == Hit::AddedTile || hit == Hit::SearchAlbum))
 			{
 				Rect pb{ img.right() - 44, img.bottom() - 44, 36, 36 };
 				bool ph = hovered(Hit::TilePlay, i);
@@ -781,7 +883,7 @@ float App::drawTiles(const std::vector<Tile>& tiles, float x, float y, float w, 
 			}
 		}
 		hotVisible(r, hit, i);
-		if (hov && (hit == Hit::AlbumTile || hit == Hit::ArtistAlbum || hit == Hit::AddedTile))
+		if (hov && (hit == Hit::AlbumTile || hit == Hit::ArtistAlbum || hit == Hit::AddedTile || hit == Hit::SearchAlbum))
 			hotVisible({ img.right() - 44, img.bottom() - 44, 36, 36 }, Hit::TilePlay, i);
 		float ty = img.bottom() + 10;
 		g.text(t.title, { r.x + pad, ty, tw - 2 * pad, 18 }, 13, Font::UiMedium, t.playing ? col::white : col::text, round ? Align::Center : Align::Left);
