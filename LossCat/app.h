@@ -3,6 +3,7 @@
 #include "player.h"
 #include "trackinfo.h"
 #include "library.h"
+#include "playlists.h"
 #include <string>
 #include <vector>
 #include <random>
@@ -30,9 +31,14 @@ enum class Hit
 	MenuItem,
 	PlayAll, ShuffleAll,
 	ConfirmOk, ConfirmCancel,
+	NewPlaylist, PlaylistNav, PlaylistRow,
+	PlaylistPlay, PlaylistShuffle, PlaylistRename, PlaylistDelete,
+	Favourite, EditBox,
+	BarFavourite, BarAddTo, LibTabPlaylists, PlaylistTile,
+	RowHeart,
 };
 
-enum class Page { Home, Now, Library, Settings };
+enum class Page { Home, Now, Library, Settings, Playlist };
 
 struct Track
 {
@@ -76,7 +82,7 @@ private:
 	void drawWindowControls(const Rect& panel);
 	void drawHome(const Rect& area);
 	void drawLibrary(const Rect& area);
-	struct Tile { std::wstring title, sub, coverPath; bool playing = false; };
+	struct Tile { std::wstring title, sub, coverPath; bool playing = false; bool heart = false; std::vector<std::wstring> mosaic; };
 	float drawTiles(const std::vector<Tile>& tiles, float x, float y, float w, Hit hit, bool round);
 	void hotVisible(const Rect& r, Hit id, int index);
 	ID2D1Bitmap* coverOf(const std::wstring& path);
@@ -85,6 +91,9 @@ private:
 	void drawPlayerBar();
 	void drawQueuePanel();
 	void drawMenu();
+	void drawPlaylist(const Rect& area);
+	void drawSidebarPlaylists(float y);
+	void drawEditBox(const Rect& r, float size, Font f);
 	void drawConfirm();
 	void drawEmpty(const Rect& area, const wchar_t* heading, const wchar_t* body, bool button);
 	void drawTrackRows(const Rect& area, const std::vector<Track>& list, Hit rowHit);
@@ -105,6 +114,19 @@ private:
 	bool inLibrary(const std::wstring& path) const;
 	void openMenu(Hit target, int index, float x, float y);
 	void removeFromLibrary(const std::vector<std::wstring>& paths);
+	std::wstring absOf(const std::string& rel) const;
+	std::string relOf(const std::wstring& abs) const;
+	bool inPlaylist(int p, const std::wstring& abs) const;
+	const std::vector<Track>& playlistTracks(int p);
+	void addToPlaylist(int p, const std::vector<std::wstring>& paths);
+	void toggleFavourite(const std::wstring& abs);
+	int newPlaylist();
+	void startRename(int p);
+	void commitRename();
+	void playPlaylist(int p, int start, bool shuffled);
+	void openPlaylistChooser(const std::vector<std::wstring>& paths, float x, float y);
+	void fillChooser();
+	bool ensureInLibrary(std::wstring& path);
 	void next(bool userAction);
 	void prev();
 	void togglePlay();
@@ -139,8 +161,9 @@ private:
 	Rect pageArea;
 	std::wstring notice;
 
-	enum class Act { Play, AddToLibrary, Remove };
-	struct MenuEntry { std::wstring label; Act act; bool danger; };
+	enum class Act { Play, AddToLibrary, Remove, Favourite, Unfavourite, PlaylistMenu, AddTo, NewWith, RemoveFromPlaylist, PlayPlaylist, RenamePlaylist, DeletePlaylist };
+	enum class Look { Item, Heading, Action };   // Action: icon, bold, line under it
+	struct MenuEntry { std::wstring label; Act act; bool danger; int arg = -1; Look look = Look::Item; };
 	bool menuOpen = false;
 	float menuX = 0, menuY = 0;
 	std::vector<MenuEntry> menu;
@@ -148,6 +171,20 @@ private:
 	bool confirmOpen = false;
 	std::wstring confirmTitle;
 	std::vector<std::wstring> pendingRemove;
+	int pendingDeletePlaylist = -1;
+	int menuPlaylist = -1, menuPosition = -1;   // right-click on a playlist row
+
+	Playlists pls;
+	Page lastPage = Page::Home;
+	int openPlaylist = -1;
+	std::vector<Track> plTracks;
+	int plTracksFor = -1;
+	unsigned plVersion = 1, plTracksVersion = 0;
+	int editPlaylist = -1;
+	std::wstring editText;
+	float sideScroll = 0, sideMaxScroll = 0;
+	Rect sideList;
+	std::vector<std::wstring> rowHeartPaths;   // song table hearts this frame, by row index
 	float listScroll = 0;
 	float listMaxScroll = 0;
 	Rect listArea;

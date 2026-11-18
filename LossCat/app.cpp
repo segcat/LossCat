@@ -1,4 +1,5 @@
 #include "app.h"
+#include "names.h"
 #include <windowsx.h>
 #include <dwmapi.h>
 #include <shellapi.h>
@@ -304,6 +305,7 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 	{
 		float x = GET_X_LPARAM(lp) / scale, y = GET_Y_LPARAM(lp) / scale;
 		pressHit = hitAt(x, y, &pressIndex);
+		if (editPlaylist >= 0 && pressHit != Hit::EditBox) commitRename();
 		if (menuOpen && pressHit != Hit::MenuItem)
 		{
 			menuOpen = false;
@@ -356,7 +358,14 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 			float x, y;
 			toClient(pt, x, y);
 			float step = GET_WHEEL_DELTA_WPARAM(wp) / 120.0f * 90.0f;
-			if (listArea.contains(x, y))
+			if (sideList.contains(x, y))
+			{
+				sideScroll -= step;
+				if (sideScroll < 0) sideScroll = 0;
+				if (sideScroll > sideMaxScroll) sideScroll = sideMaxScroll;
+				InvalidateRect(hwnd, nullptr, FALSE);
+			}
+			else if (listArea.contains(x, y))
 			{
 				listScroll -= step;
 				if (listScroll < 0) listScroll = 0;
@@ -381,8 +390,21 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 		}
 		return 0;
 
+	case WM_CHAR:
+		if (editPlaylist >= 0)
+		{
+			wchar_t c = (wchar_t)wp;
+			if (c == L'\r') commitRename();
+			else if (c == 27) { editPlaylist = -1; }
+			else if (c == L'\b') { if (!editText.empty()) editText.pop_back(); }
+			else if (c >= 32 && editText.size() < 80) editText.push_back(c);
+			InvalidateRect(hwnd, nullptr, FALSE);
+			return 0;
+		}
+		break;
 	case WM_KEYDOWN:
 	{
+		if (editPlaylist >= 0) return 0;
 		bool ctrl = GetKeyState(VK_CONTROL) < 0;
 		if (confirmOpen)
 		{
@@ -398,6 +420,7 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 		else if (ctrl && wp == 'O') openFileDialog();
 		else if (ctrl && wp == VK_OEM_COMMA) { page = Page::Settings; InvalidateRect(hwnd, nullptr, FALSE); }
 		else if (ctrl && wp == 'B') click(Hit::NavToggle, -1);
+		else if (ctrl && wp == 'L') click(Hit::BarFavourite, -1);
 		else if (wp == VK_F5) loadLibrary();
 		return 0;
 	}
@@ -499,8 +522,38 @@ void App::click(Hit id, int index)
 		if (index >= 0 && index < (int)menu.size())
 		{
 			Act act = menu[index].act;
+			int arg = menu[index].arg;
 			std::vector<std::wstring> paths = menuPaths;
 			menuOpen = false;
+			if (act == Act::PlaylistMenu)
+			{
+				fillChooser();
+				menuOpen = true;
+				break;
+			}
+			if (act == Act::Favourite || act == Act::Unfavourite) { for (const auto& p : paths) toggleFavourite(p); break; }
+			if (act == Act::AddTo) { addToPlaylist(arg, paths); break; }
+			if (act == Act::NewWith)
+			{
+				int p = newPlaylist();
+				if (p >= 0) { addToPlaylist(p, paths); startRename(p); }
+				break;
+			}
+			if (act == Act::RemoveFromPlaylist)
+			{
+				if (menuPlaylist >= 0 && menuPosition >= 0) pls.removeAt(menuPlaylist, menuPosition);
+				++plVersion;
+				break;
+			}
+			if (act == Act::PlayPlaylist) { playPlaylist(arg, 0, false); break; }
+			if (act == Act::RenamePlaylist) { startRename(arg); break; }
+			if (act == Act::DeletePlaylist)
+			{
+				pendingDeletePlaylist = arg;
+				confirmTitle = L"Delete the playlist \u201C" + widen(pls.all()[arg].name) + L"\u201D?";
+				confirmOpen = true;
+				break;
+			}
 			if (act == Act::Play)
 			{
 				queue.clear();
@@ -527,13 +580,63 @@ void App::click(Hit id, int index)
 		break;
 	case Hit::ConfirmOk:
 		confirmOpen = false;
-		removeFromLibrary(pendingRemove);
+		if (pendingDeletePlaylist > 0)
+		{
+			if (pls.remove(pendingDeletePlaylist))
+			{
+				if (page == Page::Playlist && openPlaylist == pendingDeletePlaylist) page = Page::Home;
+				else if (openPlaylist > pendingDeletePlaylist) --openPlaylist;
+			}
+			++plVersion;
+		}
+		else removeFromLibrary(pendingRemove);
 		pendingRemove.clear();
+		pendingDeletePlaylist = -1;
 		break;
 	case Hit::ConfirmCancel:
 		confirmOpen = false;
 		pendingRemove.clear();
+		pendingDeletePlaylist = -1;
 		break;
+	case Hit::NewPlaylist:
+	{
+		int p = newPlaylist();
+		if (p >= 0) { openPlaylist = p; page = Page::Playlist; startRename(p); }
+		break;
+	}
+	case Hit::PlaylistNav: openPlaylist = index; page = Page::Playlist; break;
+	case Hit::PlaylistRow: playPlaylist(openPlaylist, index, false); break;
+	case Hit::PlaylistPlay: playPlaylist(openPlaylist, -1, false); break;
+	case Hit::PlaylistShuffle: playPlaylist(openPlaylist, -1, true); break;
+	case Hit::PlaylistRename: startRename(openPlaylist); break;
+	case Hit::PlaylistDelete:
+		if (openPlaylist > 0)
+		{
+			pendingDeletePlaylist = openPlaylist;
+			confirmTitle = L"Delete the playlist \u201C" + widen(pls.all()[openPlaylist].name) + L"\u201D?";
+			confirmOpen = true;
+		}
+		break;
+	case Hit::Favourite: if (current >= 0) toggleFavourite(queue[current].path); break;
+	case Hit::BarFavourite:
+		if (current >= 0)
+		{
+			std::wstring p = queue[current].path;
+			if (ensureInLibrary(p)) toggleFavourite(p);
+		}
+		break;
+	case Hit::BarAddTo:
+		if (current >= 0)
+		{
+			std::wstring p = queue[current].path;
+			if (ensureInLibrary(p)) openPlaylistChooser({ p }, mouseX, mouseY);
+		}
+		break;
+	case Hit::RowHeart:
+		if (index >= 0 && index < (int)rowHeartPaths.size()) toggleFavourite(rowHeartPaths[index]);
+		break;
+	case Hit::LibTabPlaylists: libTab = 3; pageScroll = 0; break;
+	case Hit::PlaylistTile: openPlaylist = index; page = Page::Playlist; break;
 	case Hit::ImportFiles: { auto f = pickFiles(); if (!f.empty()) importFiles(f); break; }
 	case Hit::Rescan: loadLibrary(); notice.clear(); break;
 	case Hit::AddToLibrary: if (current >= 0 && !inLibrary(queue[current].path)) importFiles({ queue[current].path }); break;
@@ -588,11 +691,13 @@ void App::loadLibrary()
 	if (libraryDir.empty()) return;
 
 	if (!lib.open(narrow(libraryDir))) return;
+	pls.load(narrow(libraryDir));
 	refreshLibrary();
 }
 
 void App::refreshLibrary()
 {
+	++plVersion;
 	libTracks.clear();
 	for (const LibraryTrack& t : lib.tracks())
 	{
@@ -674,10 +779,29 @@ void App::openMenu(Hit target, int index, float x, float y)
 		case Hit::AddedTile: return index < (int)recentlyAdded.size() ? libTracks[recentlyAdded[index]].path : L"";
 		case Hit::RecentTile: return index < (int)recentPlayed.size() ? recentPlayed[index] : L"";
 		case Hit::QueueRow: return index < (int)queue.size() ? queue[index].path : L"";
+		case Hit::PlaylistRow: { const auto& l = playlistTracks(openPlaylist); return index < (int)l.size() ? l[index].path : L""; }
 		case Hit::Cover: case Hit::AddToLibrary: return current >= 0 ? queue[current].path : L"";
 		default: return L"";
 		}
 	};
+	if (target == Hit::PlaylistTile) target = Hit::PlaylistNav;
+	if (target == Hit::PlaylistNav)
+	{
+		const auto& all = pls.all();
+		if (index < 0 || index >= (int)all.size()) return;
+		menuPlaylist = index;
+		menu.push_back({ L"Play", Act::PlayPlaylist, false, index });
+		if (index > 0)
+		{
+			menu.push_back({ L"Rename", Act::RenamePlaylist, false, index });
+			menu.push_back({ L"Delete playlist", Act::DeletePlaylist, true, index });
+		}
+		menuX = x; menuY = y; menuOpen = true;
+		InvalidateRect(hwnd, nullptr, FALSE);
+		return;
+	}
+	menuPlaylist = target == Hit::PlaylistRow ? openPlaylist : -1;
+	menuPosition = target == Hit::PlaylistRow ? index : -1;
 	const Group* group = nullptr;
 	if (target == Hit::AlbumTile && index >= 0 && index < (int)albums.size()) group = &albums[index];
 	if (target == Hit::ArtistTile && index >= 0 && index < (int)artists.size()) group = &artists[index];
@@ -686,6 +810,7 @@ void App::openMenu(Hit target, int index, float x, float y)
 	{
 		for (int i : group->tracks) menuPaths.push_back(libTracks[i].path);
 		menu.push_back({ target == Hit::AlbumTile ? L"Play album" : L"Play all songs", Act::Play, false });
+		menu.push_back({ L"Add to playlist\x2026", Act::PlaylistMenu, false });
 		menu.push_back({ target == Hit::AlbumTile ? L"Remove album from library" : L"Remove artist from library", Act::Remove, true });
 	}
 	else
@@ -694,13 +819,165 @@ void App::openMenu(Hit target, int index, float x, float y)
 		if (p.empty()) { if (menuOpen) { menuOpen = false; InvalidateRect(hwnd, nullptr, FALSE); } return; }
 		menuPaths.push_back(p);
 		menu.push_back({ L"Play", Act::Play, false });
-		if (inLibrary(p)) menu.push_back({ L"Remove from library", Act::Remove, true });
+		if (inLibrary(p))
+		{
+			bool fav = inPlaylist(0, p);
+			menu.push_back({ fav ? L"Remove from Favourites" : L"Add to Favourites", fav ? Act::Unfavourite : Act::Favourite, false });
+			menu.push_back({ L"Add to playlist\x2026", Act::PlaylistMenu, false });
+			if (target == Hit::PlaylistRow && menuPlaylist >= 0)
+				menu.push_back({ L"Remove from this playlist", Act::RemoveFromPlaylist, false });
+			menu.push_back({ L"Remove from library", Act::Remove, true });
+		}
 		else menu.push_back({ L"Add to library", Act::AddToLibrary, false });
 	}
 	menuX = x;
 	menuY = y;
 	menuOpen = true;
 	InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+std::wstring App::absOf(const std::string& rel) const
+{
+	return libraryDir + L"\\" + widen(rel);
+}
+
+std::string App::relOf(const std::wstring& abs) const
+{
+	if (!inLibrary(abs)) return {};
+	return narrow(abs.substr(libraryDir.size() + 1));
+}
+
+bool App::inPlaylist(int p, const std::wstring& abs) const
+{
+	const auto& all = pls.all();
+	if (p < 0 || p >= (int)all.size()) return false;
+	std::string rel = relOf(abs);
+	return !rel.empty() && std::find(all[p].paths.begin(), all[p].paths.end(), rel) != all[p].paths.end();
+}
+
+const std::vector<Track>& App::playlistTracks(int p)
+{
+	if (plTracksFor == p && plTracksVersion == plVersion) return plTracks;
+	plTracks.clear();
+	plTracksFor = p;
+	plTracksVersion = plVersion;
+	const auto& all = pls.all();
+	if (p < 0 || p >= (int)all.size()) return plTracks;
+	for (const std::string& rel : all[p].paths)
+	{
+		std::wstring abs = absOf(rel);
+		auto it = std::find_if(libTracks.begin(), libTracks.end(), [&](const Track& t) { return t.path == abs; });
+		if (it != libTracks.end()) { plTracks.push_back(*it); continue; }
+		Track missing;
+		missing.path = abs;
+		missing.title = L"Missing: " + fileStem(abs);
+		missing.coverLoaded = true;
+		plTracks.push_back(missing);
+	}
+	return plTracks;
+}
+
+void App::addToPlaylist(int p, const std::vector<std::wstring>& paths)
+{
+	int added = 0;
+	for (const auto& abs : paths)
+		if (inLibrary(abs) && pls.add(p, narrow(abs))) ++added;
+	++plVersion;
+	const auto& all = pls.all();
+	if (p >= 0 && p < (int)all.size())
+	{
+		if (added == 1) notice = L"Added to " + widen(all[p].name);
+		else notice = L"Added " + std::to_wstring(added) + L" songs to " + widen(all[p].name);
+	}
+	InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+void App::toggleFavourite(const std::wstring& abs)
+{
+	if (!inLibrary(abs)) return;
+	std::string rel = relOf(abs);
+	const auto& fav = pls.all()[0].paths;
+	auto it = std::find(fav.begin(), fav.end(), rel);
+	if (it != fav.end()) pls.removeAt(0, (int)(it - fav.begin()));
+	else pls.add(0, narrow(abs));
+	++plVersion;
+	InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+int App::newPlaylist()
+{
+	std::wstring name = L"New playlist";
+	for (int n = 2;; ++n)
+	{
+		bool taken = false;
+		for (const auto& pl : pls.all()) if (sameName(pl.name, narrow(name))) taken = true;
+		if (!taken) break;
+		name = L"New playlist " + std::to_wstring(n);
+	}
+	int p = pls.create(narrow(name));
+	++plVersion;
+	return p;
+}
+
+void App::startRename(int p)
+{
+	if (p <= 0 || p >= (int)pls.all().size()) return;
+	if (collapsed) click(Hit::NavToggle, -1);
+	editPlaylist = p;
+	editText = widen(pls.all()[p].name);
+	InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+void App::commitRename()
+{
+	if (editPlaylist < 0) return;
+	int p = editPlaylist;
+	editPlaylist = -1;
+	std::string name = narrow(editText);
+	if (!name.empty() && name != pls.all()[p].name && !pls.rename(p, name))
+		notice = L"A playlist with that name already exists";
+	++plVersion;
+	InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+void App::fillChooser()
+{
+	menu.clear();
+	menu.push_back({ L"Add to playlist", Act::Play, false, -1, Look::Heading });
+	menu.push_back({ L"New playlist", Act::NewWith, false, -1, Look::Action });
+	const auto& all = pls.all();
+	for (int p = 1; p < (int)all.size(); ++p) menu.push_back({ widen(all[p].name), Act::AddTo, false, p });
+}
+
+void App::openPlaylistChooser(const std::vector<std::wstring>& paths, float x, float y)
+{
+	menuPaths = paths;
+	fillChooser();
+	menuX = x;
+	menuY = y;
+	menuOpen = true;
+	InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+// Liking or adding a song that was only dropped on the window copies it into the library first.
+bool App::ensureInLibrary(std::wstring& path)
+{
+	if (inLibrary(path)) return true;
+	std::wstring original = path;
+	importFiles({ original });
+	if (current >= 0 && !queue.empty()) path = queue[current].path;
+	return inLibrary(path);
+}
+
+void App::playPlaylist(int p, int start, bool shuffled)
+{
+	const auto& list = playlistTracks(p);
+	if (list.empty()) return;
+	if (shuffled) shuffle = true;
+	queue = list;
+	order.clear();
+	if (start < 0) start = shuffled ? (int)(rng() % queue.size()) : 0;
+	playIndex(start);
 }
 
 void App::removeFromLibrary(const std::vector<std::wstring>& paths)
@@ -763,6 +1040,15 @@ void App::removeFromLibrary(const std::vector<std::wstring>& paths)
 	recentPlayed.erase(std::remove_if(recentPlayed.begin(), recentPlayed.end(), [&](const std::wstring& p) {
 		return removing(p) && GetFileAttributesW(p.c_str()) == INVALID_FILE_ATTRIBUTES; }), recentPlayed.end());
 
+	const auto& all = pls.all();
+	for (int p = 0; p < (int)all.size(); ++p)
+	{
+		for (int pos = (int)all[p].paths.size() - 1; pos >= 0; --pos)
+		{
+			std::wstring abs = absOf(all[p].paths[pos]);
+			if (removing(abs) && GetFileAttributesW(abs.c_str()) == INVALID_FILE_ATTRIBUTES) pls.removeAt(p, pos);
+		}
+	}
 	refreshLibrary();
 	wchar_t buf[96];
 	if (removed == (int)paths.size())

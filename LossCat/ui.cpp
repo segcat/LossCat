@@ -24,6 +24,8 @@ namespace icons
 	const char* library = "M4 4v16M9 4v16M14 4l5 16";
 	const char* check = "M5 12.5l4.5 4.5L19 7.5";
 	const char* plus = "M12 5v14M5 12h14";
+	const char* heart = "M12 20l-1.3-1.2C6 14.6 3 11.9 3 8.6 3 5.9 5.1 3.9 7.7 3.9c1.6 0 3.1.7 4.3 1.9 1.2-1.2 2.7-1.9 4.3-1.9 2.6 0 4.7 2 4.7 4.7 0 3.3-3 6-7.7 10.2z";
+	const char* note = "M9 18V6l10-2v12M9 18a2.5 2.5 0 1 1-5 0 2.5 2.5 0 1 1 5 0ZM19 16a2.5 2.5 0 1 1-5 0 2.5 2.5 0 1 1 5 0Z";
 	const char* gear = "M15 12A3 3 0 1 1 9 12A3 3 0 1 1 15 12ZM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z";
 	const char* shuffle = "M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5";
 	const char* prev = "M19 19L9 12l10-7zM6 5h1.2a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z";
@@ -250,6 +252,120 @@ void App::drawSidebar()
 		y += rowH + 2 * (1 - t);
 	}
 
+	drawSidebarPlaylists(y);
+	g.popClip();
+}
+
+void App::drawEditBox(const Rect& r, float size, Font f)
+{
+	g.fill(r, 0x101010, 3);
+	g.stroke(r, 0x5A5A5A, 3);
+	Rect tr{ r.x + 8, r.y, r.w - 16, r.h };
+	g.text(editText, tr, size, f, col::text);
+	float cw = g.textWidth(editText, size, f);
+	if (cw > tr.w - 2) cw = tr.w - 2;
+	g.fill({ tr.x + cw + 1, r.cy() - size * 0.6f, 1.5f, size * 1.2f }, col::text);
+	hot(r, Hit::EditBox);
+}
+
+void App::drawSidebarPlaylists(float y)
+{
+	const Rect& s = sidebar;
+	float t = navGeo;
+	float x = s.x + 12, w = s.w - 24;
+
+	float hdrH = 54 * (1 - t);
+	if (hdrH > 0.5f)
+	{
+		float a = (1 - clamp01(t * 2)) * labelAlpha;
+		g.text(L"Playlists", { x + 12, y + 22 * (1 - t), w - 60, 24 * (1 - t) }, 12, Font::Ui, col::muted, Align::Left, a);
+		Rect plus{ x + w - 6 - 24, y + 22 * (1 - t), 24, 24 * (1 - t) };
+		if (t < 0.5f)
+		{
+			if (hovered(Hit::NewPlaylist)) g.fill(plus, col::ctlHover, 3);
+			g.icon(icons::plus, { plus.cx() - 8, plus.cy() - 8, 16, 16 }, col::soft, false, 1.8f, a);
+			hot(plus, Hit::NewPlaylist);
+		}
+	}
+	y += hdrH + 4 * t;
+
+	sideList = { s.x, y, s.w, s.bottom() - 14 - y };
+	g.pushClip(sideList);
+	const auto& all = pls.all();
+	float tile = lerp(24, 48, t), rowH = lerp(36, 48, t), gap = lerp(2, 8, t);
+	float total = all.size() * (rowH + gap);
+	sideMaxScroll = total - sideList.h;
+	if (sideMaxScroll < 0) sideMaxScroll = 0;
+	if (sideScroll > sideMaxScroll) sideScroll = sideMaxScroll;
+	float ry = y - sideScroll;
+	for (int i = 0; i < (int)all.size(); ++i, ry += rowH + gap)
+	{
+		if (ry + rowH < sideList.y || ry > sideList.bottom()) continue;
+		const Playlist& pl = all[i];
+		Rect row{ x, ry, w, rowH };
+		bool on = page == Page::Playlist && openPlaylist == i;
+		bool hov = hovered(Hit::PlaylistNav, i);
+		if (t < 0.5f)
+		{
+			if (on) g.fill(row, col::selected, 3, 1 - t * 2);
+			else if (hov) g.fill(row, col::hover, 3, 1 - t * 2);
+		}
+		Rect tl{ x + 6, ry + (rowH - tile) / 2, tile, tile };
+		float rad = lerp(2, 4, t);
+		if (i == 0)
+		{
+			g.fill(tl, hov && t >= 0.5f ? 0x353535 : 0x2E2E2E, rad);
+			float hs = lerp(14, 20, t);
+			g.icon(icons::heart, { tl.cx() - hs / 2, tl.cy() - hs / 2, hs, hs }, col::text, true);
+		}
+		else
+		{
+			// 2x2 mosaic of the first different covers, grey cells where there are none
+			std::vector<ID2D1Bitmap*> art;
+			std::vector<std::wstring> folders;
+			for (size_t k = 0; k < pl.paths.size() && art.size() < 4; ++k)
+			{
+				std::wstring abs = absOf(pl.paths[k]);
+				std::wstring dir = abs.substr(0, abs.find_last_of(L"\\/"));
+				if (std::find(folders.begin(), folders.end(), dir) != folders.end()) continue;
+				folders.push_back(dir);
+				if (ID2D1Bitmap* b = coverOf(abs)) art.push_back(b);
+			}
+			if (art.size() == 1) g.image(art[0], tl, rad);
+			else
+			{
+				g.fill(tl, 0x2E2E2E, rad);
+				if (art.empty())
+				{
+					float ns = tile * 0.55f;
+					g.icon(icons::note, { tl.cx() - ns / 2, tl.cy() - ns / 2, ns, ns }, col::muted, false, 1.6f);
+				}
+				for (int k = 0; k < (int)art.size(); ++k)
+				{
+					float c = tile / 2;
+					g.image(art[k], { tl.x + (k % 2) * c, tl.y + (k / 2) * c, c, c }, 0);
+				}
+			}
+		}
+		if (on && t >= 0.5f) g.stroke(tl.inset(-1), col::text, 5, 1);
+
+		Rect label{ tl.right() + 6, ry, w - tile - 16 - 30, rowH };
+		if (editPlaylist == i && t < 0.5f && !(page == Page::Playlist && openPlaylist == i))
+		{
+			drawEditBox({ label.x - 4, ry + 4, w - tile - 12, rowH - 8 }, 13, Font::Ui);
+		}
+		else
+		{
+			g.text(widen(pl.name), label, 13, Font::Ui, on || hov ? col::text : col::dim, Align::Left, labelAlpha);
+			wchar_t n[16];
+			swprintf(n, 16, L"%zu", pl.paths.size());
+			g.text(n, { x + w - 40, ry, 32, rowH }, 11, Font::Mono, col::muted, Align::Right, labelAlpha);
+		}
+		Rect hit = t < 0.5f ? row : Rect{ x, ry, tile + 12, rowH };
+		float top = hit.y < sideList.y ? sideList.y : hit.y;
+		float bot = hit.bottom() > sideList.bottom() ? sideList.bottom() : hit.bottom();
+		if (bot > top && editPlaylist != i) hot({ hit.x, top, hit.w, bot - top }, Hit::PlaylistNav, i);
+	}
 	g.popClip();
 }
 
@@ -328,6 +444,7 @@ void App::drawMain()
 	{
 	case Page::Home: drawHome(area); break;
 	case Page::Library: drawLibrary(area); break;
+	case Page::Playlist: drawPlaylist(area); break;
 	case Page::Now: drawNowPlaying(area); break;
 	case Page::Settings: drawSettings(area); break;
 	}
@@ -361,10 +478,10 @@ void App::drawEmpty(const Rect& a, const wchar_t* heading, const wchar_t* body, 
 
 void App::drawTrackRows(const Rect& a, const std::vector<Track>& list, Hit rowHit)
 {
-	float flexW = (a.right() - 12 - 56 - 16 - 110) - (a.x + 52);
+	float flexW = (a.right() - 12 - 56 - 36 - 16 - 110) - (a.x + 52);
 	bool showAlbum = flexW >= 420;
 	float wTitle = flexW * (showAlbum ? 0.44f : 0.6f), wArtist = flexW * (showAlbum ? 0.28f : 0.4f), wAlbum = showAlbum ? flexW * 0.28f : 0;
-	float colX[] = { a.x + 12, a.x + 52, a.x + 52 + wTitle, a.x + 52 + wTitle + wArtist, a.right() - 12 - 56 - 16 - 110, a.right() - 12 - 56 };
+	float colX[] = { a.x + 12, a.x + 52, a.x + 52 + wTitle, a.x + 52 + wTitle + wArtist, a.right() - 12 - 56 - 36 - 16 - 110, a.right() - 12 - 56 };
 
 	float y = a.y;
 	g.text(L"#", { colX[0], y, 30, 30 }, 12, Font::Ui, col::muted);
@@ -381,6 +498,7 @@ void App::drawTrackRows(const Rect& a, const std::vector<Track>& list, Hit rowHi
 	if (listMaxScroll < 0) listMaxScroll = 0;
 	if (listScroll > listMaxScroll) listScroll = listMaxScroll;
 	const std::wstring* playing = current >= 0 ? &queue[current].path : nullptr;
+	rowHeartPaths.assign(list.size(), L"");
 
 	g.pushClip(listArea);
 	int first = (int)(listScroll / 30);
@@ -391,7 +509,8 @@ void App::drawTrackRows(const Rect& a, const std::vector<Track>& list, Hit rowHi
 		const Track& t = list[i];
 		Rect r{ a.x, ry, a.w, 30 };
 		bool on = playing && *playing == t.path;
-		if (hovered(rowHit, i)) g.fill(r, col::hover);
+		bool rowHov = hovered(rowHit, i) || hovered(Hit::RowHeart, i);
+		if (rowHov) g.fill(r, col::hover);
 		uint32_t fg = on ? col::white : col::text;
 		wchar_t num[16];
 		swprintf(num, 16, L"%d", i + 1);
@@ -408,6 +527,20 @@ void App::drawTrackRows(const Rect& a, const std::vector<Track>& list, Hit rowHi
 		float top = ry < listArea.y ? listArea.y : ry;
 		float bot = ry + 30 > listArea.bottom() ? listArea.bottom() : ry + 30;
 		if (bot > top) hot({ a.x, top, a.w, bot - top }, rowHit, i);
+
+		// heart: always shown when liked, on hover otherwise
+		if (inLibrary(t.path))
+		{
+			bool fav = inPlaylist(0, t.path);
+			Rect hb{ colX[5] - 36, ry + 3, 24, 24 };
+			if (fav || rowHov)
+			{
+				if (hovered(Hit::RowHeart, i)) g.fill(hb, col::ctlHover, 3);
+				g.icon(icons::heart, { hb.cx() - 7, hb.cy() - 7, 14, 14 }, fav ? col::white : col::soft, fav, 1.6f);
+			}
+			rowHeartPaths[i] = t.path;
+			if (bot > top) hot({ hb.x, top > hb.y ? top : hb.y, hb.w, (bot < hb.bottom() ? bot : hb.bottom()) - (top > hb.y ? top : hb.y) }, Hit::RowHeart, i);
+		}
 	}
 	g.popClip();
 }
@@ -464,9 +597,29 @@ float App::drawTiles(const std::vector<Tile>& tiles, float x, float y, float w, 
 		}
 		else
 		{
-			ID2D1Bitmap* bmp = coverOf(t.coverPath);
-			if (bmp) g.image(bmp, img, 2);
-			else g.fill(img, col::tile, 2);
+			if (t.heart)
+			{
+				g.fill(img, hov ? 0x353535 : 0x2E2E2E, 2);
+				float hs = img.w * 0.3f;
+				g.icon(icons::heart, { img.cx() - hs / 2, img.cy() - hs / 2, hs, hs }, col::text, true);
+			}
+			else if (t.mosaic.size() > 1)
+			{
+				g.fill(img, 0x2E2E2E, 2);
+				float c = img.w / 2;
+				for (int k = 0; k < (int)t.mosaic.size() && k < 4; ++k)
+					if (ID2D1Bitmap* b = coverOf(t.mosaic[k])) g.image(b, { img.x + (k % 2) * c, img.y + (k / 2) * c, c, c }, 0);
+			}
+			else if (ID2D1Bitmap* bmp = coverOf(t.coverPath)) g.image(bmp, img, 2);
+			else
+			{
+				g.fill(img, col::tile, 2);
+				if (t.coverPath.empty())
+				{
+					float ns = img.w * 0.3f;
+					g.icon(icons::note, { img.cx() - ns / 2, img.cy() - ns / 2, ns, ns }, col::muted, false, 1.4f);
+				}
+			}
 			g.stroke(img, 0x313131, 2, 1, 0.6f);
 			if (t.playing)
 			{
@@ -549,10 +702,10 @@ void App::drawLibrary(const Rect& a)
 	listArea = {};
 	float y = a.y;
 	g.text(L"Library", { a.x + 6, y, 120, 30 }, 22, Font::UiMedium, col::text);
-	const wchar_t* tabs[] = { L"Albums", L"Artists", L"Songs" };
-	const Hit tabHits[] = { Hit::LibTabAlbums, Hit::LibTabArtists, Hit::LibTabSongs };
+	const wchar_t* tabs[] = { L"Albums", L"Artists", L"Songs", L"Playlists" };
+	const Hit tabHits[] = { Hit::LibTabAlbums, Hit::LibTabArtists, Hit::LibTabSongs, Hit::LibTabPlaylists };
 	float tx = a.x + 6 + g.textWidth(L"Library", 22, Font::UiMedium) + 28;
-	for (int i = 0; i < 3; ++i)
+	for (int i = 0; i < 4; ++i)
 	{
 		float tw = g.textWidth(tabs[i], 13, Font::UiMedium);
 		Rect r{ tx, y + 2, tw, 28 };
@@ -624,6 +777,31 @@ void App::drawLibrary(const Rect& a)
 		}
 		used = drawTiles(tiles, a.x, cy, a.w, Hit::AlbumTile, false);
 	}
+	else if (libTab == 3)
+	{
+		std::vector<Tile> tiles;
+		const auto& all = pls.all();
+		for (int p = 0; p < (int)all.size(); ++p)
+		{
+			Tile tl;
+			tl.title = widen(all[p].name);
+			tl.sub = all[p].paths.size() == 1 ? L"1 song" : std::to_wstring(all[p].paths.size()) + L" songs";
+			tl.heart = p == 0;
+			std::vector<std::wstring> folders;   // one cover per album folder, so the mosaic isn't the same art four times
+			for (const std::string& rel : all[p].paths)
+			{
+				std::wstring abs = absOf(rel);
+				std::wstring dir = abs.substr(0, abs.find_last_of(L"\\/"));
+				if (std::find(folders.begin(), folders.end(), dir) != folders.end()) continue;
+				folders.push_back(dir);
+				tl.mosaic.push_back(abs);
+				if (tl.mosaic.size() == 4) break;
+			}
+			if (tl.mosaic.size() == 1) tl.coverPath = tl.mosaic[0];
+			tiles.push_back(tl);
+		}
+		used = drawTiles(tiles, a.x, cy, a.w, Hit::PlaylistTile, false);
+	}
 	else
 	{
 		std::vector<Tile> tiles;
@@ -633,6 +811,64 @@ void App::drawLibrary(const Rect& a)
 	g.popClip();
 	pageMaxScroll = used - body.h + 24;
 	if (pageMaxScroll < 0) pageMaxScroll = 0;
+}
+
+void App::drawPlaylist(const Rect& a)
+{
+	listArea = {};
+	const auto& all = pls.all();
+	if (openPlaylist < 0 || openPlaylist >= (int)all.size()) { page = Page::Home; return; }
+	const Playlist& pl = all[openPlaylist];
+	const std::vector<Track>& list = playlistTracks(openPlaylist);
+	float y = a.y;
+
+	if (editPlaylist == openPlaylist)
+		drawEditBox({ a.x, y - 2, a.w * 0.5f, 34 }, 22, Font::UiMedium);
+	else
+		g.text(widen(pl.name), { a.x + 6, y, a.w - 12, 30 }, 22, Font::UiMedium, col::text);
+	y += 34;
+	int secs = 0;
+	for (const Track& t : list) secs += t.info.durationMs / 1000;
+	wchar_t sub[64];
+	if (list.size() == 1) swprintf(sub, 64, L"1 song, %d min", (secs + 59) / 60);
+	else swprintf(sub, 64, L"%zu songs, %d min", list.size(), (secs + 59) / 60);
+	g.text(sub, { a.x + 6, y, a.w - 12, 20 }, 13, Font::Ui, col::dim);
+	y += 20 + 16;
+
+	float px = a.x + 6;
+	auto button = [&](const wchar_t* label, const char* icon, bool filled, Hit id, bool primary) {
+		float bw = (icon ? 12 + 16 + 8 : 14) + g.textWidth(label, 13, Font::UiMedium) + 14;
+		Rect b{ px, y, bw, 30 };
+		if (primary) g.fill(b, hovered(id) ? 0xFFFFFF : col::text, 15);
+		else { if (hovered(id)) g.fill(b, col::hover, 15); g.stroke(b, col::chip, 15); }
+		uint32_t fg = primary ? 0x131313 : col::text;
+		if (icon) g.icon(icon, { b.x + 12, b.cy() - 8, 16, 16 }, fg, filled, 1.6f);
+		float lx = icon ? 36.0f : 14.0f;
+		g.text(label, { b.x + lx, b.y, bw - lx - 8, 30 }, 13, Font::UiMedium, fg);
+		hot(b, id);
+		px += bw + 8;
+	};
+	if (!list.empty())
+	{
+		button(L"Play", icons::play, true, Hit::PlaylistPlay, true);
+		button(L"Shuffle", icons::shuffle, false, Hit::PlaylistShuffle, false);
+	}
+	if (openPlaylist > 0)
+	{
+		button(L"Rename", nullptr, false, Hit::PlaylistRename, false);
+		button(L"Delete", nullptr, false, Hit::PlaylistDelete, false);
+	}
+	if (!notice.empty()) g.text(notice, { px + 8, y, a.right() - px - 8, 30 }, 12, Font::Ui, col::dim);
+	y += 30 + 18;
+
+	if (list.empty())
+	{
+		g.text(openPlaylist == 0 ? L"Nothing here yet. Use the heart on Now playing, or right-click a song."
+			: L"Nothing here yet. Right-click a song and choose Add to playlist.",
+			{ a.x + 6, y, a.w - 12, 20 }, 13, Font::Ui, col::dim);
+		return;
+	}
+	drawTrackRows({ a.x, y, a.w, a.bottom() - y }, list, Hit::PlaylistRow);
 }
 
 ID2D1Bitmap* App::currentCover()
@@ -778,7 +1014,22 @@ void App::drawNowPlaying(const Rect& a)
 		g.icon(have ? icons::check : icons::plus, { b.x + 12, b.cy() - 8, 16, 16 }, have ? col::dim : col::text, false, 1.6f);
 		g.text(label, { b.x + 36, b.y, bw - 44, 30 }, 12, Font::Ui, have ? col::dim : col::text);
 		if (!have) hot(b, Hit::AddToLibrary);
-		if (!notice.empty()) g.text(notice, { b.right() + 12, y, a.right() - b.right() - 12, 30 }, 12, Font::Ui, col::dim);
+		float nx = b.right() + 12;
+		if (have)
+		{
+			bool fav = inPlaylist(0, tr.path);
+			const wchar_t* fl = fav ? L"In Favourites" : L"Favourite";
+			float fw = 12 + 16 + 8 + g.textWidth(fl, 12, Font::Ui) + 12;
+			Rect f{ b.right() + 8, y, fw, 30 };
+			if (fav) g.fill(f, 0x272727, 3);
+			else if (hovered(Hit::Favourite)) g.fill(f, col::hover, 3);
+			g.stroke(f, col::chip, 3);
+			g.icon(icons::heart, { f.x + 12, f.cy() - 8, 16, 16 }, col::text, fav, 1.6f);
+			g.text(fl, { f.x + 36, f.y, fw - 44, 30 }, 12, Font::Ui, col::text);
+			hot(f, Hit::Favourite);
+			nx = f.right() + 12;
+		}
+		if (!notice.empty()) g.text(notice, { nx, y, a.right() - nx, 30 }, 12, Font::Ui, col::dim);
 		y += 30 + 24;
 	}
 
@@ -959,28 +1210,46 @@ void App::drawQueuePanel()
 
 void App::drawMenu()
 {
-	float w = 0;
+	auto itemH = [](const MenuEntry& m) { return m.look == Look::Heading ? 28.0f : m.look == Look::Action ? 32.0f + 9.0f : 32.0f; };
+	float w = 0, h = 8;
 	for (const MenuEntry& m : menu)
 	{
-		float tw = g.textWidth(m.label, 13, Font::Ui);
+		float tw = g.textWidth(m.label, 13, m.look == Look::Action ? Font::UiMedium : Font::Ui) + (m.look == Look::Action ? 26 : 0);
 		if (tw > w) w = tw;
+		h += itemH(m);
 	}
 	w += 24 + 8;
-	if (w < 180) w = 180;
-	float h = 8.0f + 32.0f * static_cast<float>(menu.size());
+	if (w < 200) w = 200;
 	float x = menuX + w > W - 8 ? menuX - w : menuX;
 	float y = menuY + h > H - 8 ? menuY - h : menuY;
 	Rect r{ x, y, w, h };
 	g.fill({ r.x, r.y + 2, r.w, r.h }, 0x000000, 6, 0.35f);
 	g.fill(r, 0x222222, 6);
 	g.stroke(r, 0x333333, 6);
+	float iy = r.y + 4;
 	for (int i = 0; i < (int)menu.size(); ++i)
 	{
-		Rect it{ r.x + 4, r.y + 4 + i * 32.0f, r.w - 8, 32 };
-		bool hov = hovered(Hit::MenuItem, i);
-		if (hov) g.fill(it, menu[i].danger ? 0x3A2422 : 0x2E2E2E, 4);
-		g.text(menu[i].label, { it.x + 12, it.y, it.w - 24, it.h }, 13, Font::Ui, menu[i].danger ? 0xE5584F : col::text);
+		const MenuEntry& m = menu[i];
+		if (m.look == Look::Heading)
+		{
+			g.text(m.label, { r.x + 16, iy + 4, r.w - 32, 24 }, 12, Font::Ui, col::muted);
+			iy += 28;
+			continue;
+		}
+		Rect it{ r.x + 4, iy, r.w - 8, 32 };
+		if (hovered(Hit::MenuItem, i)) g.fill(it, m.danger ? 0x3A2422 : 0x2E2E2E, 4);
+		if (m.look == Look::Action)
+		{
+			g.icon(icons::plus, { it.x + 12, it.cy() - 8, 16, 16 }, col::white, false, 1.8f);
+			g.text(m.label, { it.x + 38, it.y, it.w - 50, it.h }, 13, Font::UiMedium, col::white);
+			hot(it, Hit::MenuItem, i);
+			g.line(r.x + 1, iy + 32 + 4.5f, r.right() - 1, iy + 32 + 4.5f, 0x333333, 1);
+			iy += 32 + 9;
+			continue;
+		}
+		g.text(m.label, { it.x + 12, it.y, it.w - 24, it.h }, 13, Font::Ui, m.danger ? 0xE5584F : col::text);
 		hot(it, Hit::MenuItem, i);
+		iy += 32;
 	}
 }
 
@@ -993,13 +1262,16 @@ void App::drawConfirm()
 	g.fill(d, 0x1E1E1E, 8);
 	g.stroke(d, 0x333333, 8);
 	g.text(confirmTitle, { d.x + 24, d.y + 22, w - 48, 22 }, 15, Font::UiMedium, col::text);
-	g.textBlock(L"They come out of your LossCat library. You can restore them from the Recycle Bin.",
+	bool deleting = pendingDeletePlaylist > 0;
+	g.textBlock(deleting ? L"The songs stay in your library. Only the playlist goes."
+		: L"They come out of your LossCat library. You can restore them from the Recycle Bin.",
 		{ d.x + 24, d.y + 52, w - 48, 40 }, 13, Font::Ui, col::dim, 2, 20);
 	float bh = 32, by = d.bottom() - 20 - bh;
-	float okW = g.textWidth(L"Move to Recycle Bin", 13, Font::UiMedium) + 28;
+	const wchar_t* okLabel = deleting ? L"Delete playlist" : L"Move to Recycle Bin";
+	float okW = g.textWidth(okLabel, 13, Font::UiMedium) + 28;
 	Rect ok{ d.right() - 20 - okW, by, okW, bh };
 	g.fill(ok, hovered(Hit::ConfirmOk) ? 0xD9483F : 0xC0403A, 3);
-	g.text(L"Move to Recycle Bin", ok, 13, Font::UiMedium, col::white, Align::Center);
+	g.text(okLabel, ok, 13, Font::UiMedium, col::white, Align::Center);
 	hot(ok, Hit::ConfirmOk);
 	float cW = g.textWidth(L"Cancel", 13, Font::UiMedium) + 28;
 	Rect cancel{ ok.x - 8 - cW, by, cW, bh };
@@ -1035,6 +1307,16 @@ void App::drawPlayerBar()
 	if (hasTrack)
 	{
 		const Track& t = queue[current];
+		tw -= 64;
+		bool fav = inPlaylist(0, t.path);
+		Rect heart{ colL.right() - 60, cy - 30, 28, 28 };
+		Rect add{ colL.right() - 30, cy - 30, 28, 28 };
+		if (hovered(Hit::BarFavourite)) g.fill(heart, col::ctlHover, 3);
+		if (hovered(Hit::BarAddTo)) g.fill(add, col::ctlHover, 3);
+		g.icon(icons::heart, { heart.cx() - 8, heart.cy() - 8, 16, 16 }, fav ? col::white : col::soft, fav, 1.6f);
+		g.icon(icons::plus, { add.cx() - 8, add.cy() - 8, 16, 16 }, col::soft, false, 1.8f);
+		hot(heart, Hit::BarFavourite);
+		hot(add, Hit::BarAddTo);
 		g.text(t.title, { tx, cy - 26, tw, 18 }, 14, Font::UiMedium, col::text);
 		std::wstring sub = t.album.empty() ? t.artist : t.artist + L", " + t.album;
 		g.text(sub, { tx, cy - 7, tw, 16 }, 12, Font::Ui, col::dim);
