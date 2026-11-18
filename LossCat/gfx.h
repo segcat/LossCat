@@ -57,6 +57,7 @@ public:
 	float textBlock(const std::wstring& s, const Rect& r, float size, Font f, uint32_t rgb,
 		int maxLines, float lineHeight);
 	float textWidth(const std::wstring& s, float size, Font f);
+	float textHeight(const std::wstring& s, float width, float size, Font f, float lineHeight);
 
 	// Draw an SVG path (24x24 viewBox) scaled into box. `path` must be a string literal
 	// (geometries are cached by pointer).

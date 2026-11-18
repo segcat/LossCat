@@ -7,24 +7,21 @@ LossCat is an early-stage project. The basics are in place, but there are still 
 ## What it does
 
 - Plays FLAC, WAV, AIFF and MP3.
-- Organises imported music by artist and album.
-- Lets you browse albums, artists, songs and playlists, with dedicated album and artist pages.
-- Opens an album or artist page when clicked; album tiles have a play button on hover.
-- Keeps playlists and Favourites in `.m3u8` files.
-- Shows cover art, embedded lyrics and audio information from file tags.
-- Shows cover thumbnails in the queue and Up next.
-- Embeds custom album covers into library files.
-- Imports multiple files in the background, with progress and cancellation.
-- Supports Unicode file paths for playback, metadata and imports.
-- Displays the source and output sample rates, including whether resampling is happening.
+- Imports music into its own folder, organised by artist and album, or scans your existing music folders in place without copying them.
+- Lets you browse albums, artists, songs and playlists, with album and artist pages.
+- Keeps playlists and Favourites in `.m3u8` files, plus a **Lossless 24-bit** smart playlist that fills itself from your library.
+- Shows cover art, lyrics and audio details from file tags, with the album's other songs on Now playing.
+- Lets you set album covers and lyrics, and saves them into the song files' tags.
+- Shows the source and output sample rates, including whether resampling is happening.
+- Remembers your volume, queue, position and recently played songs between sessions.
 - Includes a queue, shuffle, repeat and media-key controls.
-- Shows playlist names on hover when the sidebar is collapsed.
+- Supports Unicode file paths.
 
 ## Using it
 
 Drop files onto the window or press **Ctrl+O** to play them without importing.
 
-**Import files** copies songs into your Windows Music folder under `LossCat`:
+**Import files** copies songs into your LossCat folder, which defaults to `Music\LossCat`:
 
 ```text
 Music\LossCat\
@@ -35,13 +32,23 @@ Music\LossCat\
     Favourites.m3u8
 ```
 
-Importing leaves the original files alone. Removing imported songs from the library sends the library copies to the Recycle Bin. Deleting a playlist only deletes the playlist, not its songs.
+Importing leaves the original files alone. Large imports run in the background and can be cancelled. Removing imported songs from the library sends the library copies to the Recycle Bin. Deleting a playlist only deletes the playlist, not its songs.
 
-### Album covers
+### Music folders
 
-Right-click an album and choose **Set album cover** to pick a JPEG or PNG image. LossCat resizes it to fit within 1200 pixels, converts it to JPEG and embeds it into each song's tags using TagLib.
+In **Settings → Library** you can add existing music folders. Their songs appear in the library where they are, without being copied. Removing one of these songs from the library hides it instead of deleting the file; hidden songs can be shown again from Settings.
 
-This changes the library files themselves, replacing their embedded cover art. Files outside the library are not modified.
+You can also change the LossCat folder. Your imported songs and playlists are moved to the new location.
+
+Scans run in the background. LossCat keeps a tag cache, so after the first scan only new or changed files are read again. Press **F5** to rescan.
+
+### Covers and lyrics are saved into your files
+
+**Set album cover** (on an album page, or by right-clicking an album or song) takes a JPEG or PNG image, resizes it to fit within 1200 pixels, converts it to JPEG and embeds it into the tags of every song on the album, replacing any existing cover art.
+
+On the **Lyrics** tab you can paste lyrics from the clipboard or load an `.lrc` or `.txt` file. They're saved into the song's lyrics tag. `.lrc` timestamps are kept in the tag, but lyrics are currently shown without timing.
+
+Both change the audio files themselves, though only their tags; the audio data is untouched. This applies to every song in your library, including the original files in folders you've added. Songs that aren't in your library are never modified.
 
 ### Shortcuts
 
@@ -56,6 +63,12 @@ This changes the library files themselves, replacing their embedded cover art. F
 | F5 | Rescan library |
 | Esc | Dismiss a menu or dialog, or close the queue |
 
+On the Lyrics tab, **Ctrl+C** copies the selected lines (or all of them), **Ctrl+A** selects everything and **Ctrl+V** saves lyrics from the clipboard.
+
+### Where LossCat keeps things
+
+Your settings, queue and history are in `%APPDATA%\LossCat\state.txt`, next to the tag cache (`library-cache.txt`). Deleting them resets LossCat; it doesn't touch your music.
+
 ## Building
 
 Requires **Visual Studio 2026**, the **Desktop development with C++** workload, a Windows SDK and vcpkg integration. The projects use C++20, the v145 toolset and the `x64-windows-static` triplet.
@@ -68,10 +81,10 @@ vcpkg restores TagLib from the manifest. The first build may take longer while d
 
 ## Current limitations
 
-- Volume, queue and recently played history are not restored between sessions.
 - Playback uses shared-mode audio; there is no exclusive mode.
 - Audio-device changes may require restarting the app.
-- OGG, Opus and M4A playback is not supported yet.
+- OGG, Opus and M4A files show up in the library but can't be played yet.
+- There's no search yet.
 - Keyboard navigation and screen-reader support are incomplete.
 
 ## Code
@@ -83,5 +96,7 @@ vcpkg restores TagLib from the manifest. The first build may take longer while d
 
 - [miniaudio](https://github.com/mackron/miniaudio) by David Reid — audio decoding and playback. Public domain or MIT No Attribution.
 - [TagLib](https://github.com/taglib/taglib) — metadata and cover art. LGPL 2.1 or MPL 1.1.
+- [zlib](https://zlib.net) — compression, used by TagLib. zlib License.
+- [UTF8-CPP](https://github.com/nemtrif/utfcpp) — text encoding, used by TagLib. Boost Software License 1.0.
 
 © 2026 SegCat

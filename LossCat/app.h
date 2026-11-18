@@ -9,6 +9,7 @@
 #include <random>
 #include <thread>
 #include <atomic>
+#include <map>
 
 // Everything that can be clicked. Drawing registers a rectangle for each one every
 // frame; mouse handling and WM_NCHITTEST look them up from the last frame.
@@ -23,7 +24,7 @@ enum class Hit
 	Panel,           // background that swallows clicks (not a drag area)
 	QueueRow,
 	LibraryRow,
-	OpenLibraryFolder,
+	OpenLibraryFolder, ChangeLibraryFolder, AddMusicFolder, RemoveMusicFolder, OpenMusicFolder, ShowHidden,
 	LibTabAlbums, LibTabArtists, LibTabSongs,
 	AlbumTile,
 	ArtistTile,
@@ -41,11 +42,14 @@ enum class Hit
 	Link,            // + index into links
 	Back,
 	CancelImport,
-	TilePlay,        // play button on a hovered album tile
+	TilePlay,
+	NowAlbumRow, GoToAlbum, NowMore,
+	SmartNav, SmartRow,
+	LyricLine, LyricScroll, LyricCopy, LyricPaste, LyricFile, LyricRemove,        // play button on a hovered album tile
 	GroupBack, GroupPlay, GroupShuffle, AlbumRow, AlbumCover, AlbumArtist, ArtistAlbum,
 };
 
-enum class Page { Home, Now, Library, Settings, Playlist, License, Album, Artist };
+enum class Page { Home, Now, Library, Settings, Playlist, License, Album, Artist, Smart };
 
 struct Track
 {
@@ -70,7 +74,14 @@ class App
 public:
 	bool create(HINSTANCE inst, int show);
 	void addFiles(const std::vector<std::wstring>& files, bool playFirst);
-	void loadLibrary();
+	void loadLibrary(bool background = false);
+	void finishScan();
+	void addMusicFolder();
+	std::wstring pickFolder(const wchar_t* title);
+	void changeLibraryFolder();
+	void startLibraryMove();
+	void finishLibraryMove();
+	bool isImported(const std::wstring& path) const;   // a copy in LossCat's own folder, not a song from a scanned folder
 	void refreshLibrary();
 	static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 
@@ -89,7 +100,7 @@ private:
 	void drawWindowControls(const Rect& panel);
 	void drawHome(const Rect& area);
 	void drawLibrary(const Rect& area);
-	struct Tile { std::wstring title, sub, coverPath; bool playing = false; bool heart = false; std::vector<std::wstring> mosaic; };
+	struct Tile { std::wstring title, sub, coverPath; bool playing = false; bool heart = false; std::vector<std::wstring> mosaic; bool sparkle = false; };
 	float drawTiles(const std::vector<Tile>& tiles, float x, float y, float w, Hit hit, bool round);
 	void hotVisible(const Rect& r, Hit id, int index);
 	ID2D1Bitmap* coverOf(const std::wstring& path);
@@ -101,7 +112,12 @@ private:
 	void drawQueuePanel();
 	void drawMenu();
 	void drawPlaylist(const Rect& area);
+	void drawLyrics(const Track& tr, const Rect& body);
 	void drawAlbum(const Rect& area);
+	// Smart playlist "Lossless 24-bit": library songs that are lossless with 24-bit or more. Built on the fly.
+	std::vector<int> smartTracks() const;
+	void drawSmart(const Rect& area);
+	int tileToPlaylist(int tile) const { return tile == 0 ? 0 : tile == 1 ? -2 : tile - 1; }
 	void drawArtist(const Rect& area);
 	void openAlbum(int album);
 	void openArtist(int artist);
@@ -193,9 +209,32 @@ private:
 	std::vector<MenuEntry> menu;
 	std::vector<std::wstring> menuPaths;
 	bool confirmOpen = false;
-	std::wstring confirmTitle;
+	std::wstring confirmTitle, confirmBody;   // body: overrides the default text when set
 	std::vector<std::wstring> pendingRemove;
 	int pendingDeletePlaylist = -1;
+	bool pendingRemoveLyrics = false;
+
+	// Lyrics tab: lines as shown, a line selection to copy, and its own scroll.
+	std::map<std::wstring, std::wstring> lyricsByPath;   // what's in each file's tag, kept fresh after edits
+	std::wstring lyricsPath;
+	std::vector<std::wstring> lyricLines;
+	std::vector<float> lyricTops;
+	Rect lyricArea;
+	float lyricScroll = 0, lyricMaxScroll = 0, lyricThumbH = 0;
+	int lyricSelA = -1, lyricSelB = -1;
+	bool selectingLyrics = false;
+	const std::wstring& lyricsFor(const Track& t);
+	int lyricLineAt(float y) const;
+	void copyLyrics();
+	void saveLyrics(const std::wstring& text);
+	void pasteLyrics();
+	void loadLyricsFile();
+
+	// Volume, queue, history and a few view settings, kept in %APPDATA%\LossCat\state.txt.
+	std::wstring statePath() const;
+	void saveState();
+	void loadState();
+	double lastSaveMs = 0;
 	int menuPlaylist = -1, menuPosition = -1;   // right-click on a playlist row
 
 	Playlists pls;
@@ -205,6 +244,15 @@ private:
 	std::wstring albumName, albumArtist, artistName;
 	bool albumFromArtist = false;
 	std::vector<int> artistAlbums;
+	int nowAlbum = -1;
+	Rect nowAlbumArea;
+	float nowAlbumScroll = 0, nowAlbumMaxScroll = 0;
+	std::wstring nowAlbumFor;
+	// Text too long for its space slides back and forth instead of being cut off.
+	void marquee(const std::wstring& s, const Rect& r, float size, Font f, uint32_t rgb);
+	bool marqueeActive = false, marqueeTimer = false;
+	double marqueeStart = 0;
+	float npCoverBottom = 0;   // Now playing: where the tab separator was last frame, so the cover can end there   // album of the song on Now playing, for its About album tab
 	std::vector<Track> plTracks;
 	int plTracksFor = -1;
 	unsigned plVersion = 1, plTracksVersion = 0;
@@ -224,6 +272,23 @@ private:
 	std::atomic<int> importDone{ 0 };
 	int importTotal = 0;
 	std::vector<ImportResult> importResults;
+	// Music folders scanned in place (nothing copied), and songs hidden from them.
+	std::vector<std::wstring> musicFolders, hiddenFiles;
+	// Rescans run on a worker thread into a fresh Library that replaces lib when done.
+	std::thread scanThread;
+	std::atomic<bool> scanning{ false };
+	std::atomic<int> scanCount{ 0 };
+	Library scanned;
+	// The LossCat folder can be moved; empty means the default, Music\LossCat.
+	std::wstring customLibraryDir, pendingLibraryDir;
+	std::thread moveThread;
+	std::atomic<bool> moving{ false };
+	std::atomic<int> moveDone{ 0 }, moveTotal{ 0 }, moveFailed{ 0 };
+	std::wstring moveFrom, moveTo;
+	double moveResumeAt = 0;
+	bool moveResume = false;
+	std::wstring moveResumePath;
+	std::wstring cachePath() const;
 	// Writing a cover into every file of an album also runs on a worker thread.
 	std::thread coverThread;
 	std::atomic<bool> coverBusy{ false };
@@ -275,5 +340,5 @@ private:
 	float W = 0, H = 0, scale = 1;
 	float navGeo = 0, labelAlpha = 1, queueVis = 0;
 	std::wstring error;
-	Rect sidebar, mainPanel, queuePanel, playerBar, seekBar, volumeBar;
+	Rect sidebar, mainPanel, queuePanel, playerBar, seekBar, volumeBar, nowMoreAt;
 };

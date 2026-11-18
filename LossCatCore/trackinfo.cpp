@@ -103,7 +103,7 @@ bool writeCover(const std::string& path, const std::vector<unsigned char>& image
 	TagLib::FileRef f(p.c_str());
 	if (f.isNull())
 	{
-		error = "Can't open this file's tags";
+		error = "Can't open this file's tags";	
 		return false;
 	}
 	TagLib::ByteVector data(reinterpret_cast<const char*>(image.data()), static_cast<unsigned int>(image.size()));
@@ -111,6 +111,33 @@ bool writeCover(const std::string& path, const std::vector<unsigned char>& image
 	if (!f.setComplexProperties("PICTURE", { { { "data", data }, { "pictureType", "Front Cover" }, { "mimeType", mime } } }))
 	{
 		error = "This format can't hold cover art";
+		return false;
+	}
+	if (!f.save())
+	{
+		error = "Couldn't save the file";
+		return false;
+	}
+	return true;
+}
+
+bool writeLyrics(const std::string& path, const std::string& lyrics, std::string& error)
+{
+	std::filesystem::path p(std::u8string(path.begin(), path.end()));
+	TagLib::FileRef f(p.c_str());
+	if (f.isNull())
+	{
+		error = "Can't open this file's tags";
+		return false;
+	}
+	TagLib::PropertyMap tags = f.properties();
+	tags.erase("UNSYNCEDLYRICS");
+	if (lyrics.empty()) tags.erase("LYRICS");
+	else tags.replace("LYRICS", TagLib::StringList(TagLib::String(lyrics, TagLib::String::UTF8)));
+	TagLib::PropertyMap rejected = f.setProperties(tags);
+	if (!lyrics.empty() && rejected.contains("LYRICS"))
+	{
+		error = "This format can't hold lyrics";
 		return false;
 	}
 	if (!f.save())

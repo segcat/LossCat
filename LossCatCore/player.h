@@ -178,7 +178,6 @@ public:
 			isLoaded = false;
 		}
 		ma_decoder_config decoderConfig = ma_decoder_config_init(ma_format_f32, channels, sampleRate);
-		// path is UTF-8. On Windows the narrow API reads it in the old code page, so open it wide.
 #ifdef _WIN32
 		std::filesystem::path p(std::u8string(path.begin(), path.end()));
 		ma_result opened = ma_decoder_init_file_w(p.c_str(), &decoderConfig, &decoder);

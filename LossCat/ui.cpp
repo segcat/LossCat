@@ -37,6 +37,8 @@ namespace icons
 	const char* volume = "M11 5L6 9H3v6h3l5 4zM16 9a4 4 0 0 1 0 6M19 6a8 8 0 0 1 0 12";
 	const char* mute = "M11 5L6 9H3v6h3l5 4zM16 9l6 6M22 9l-6 6";
 	const char* close = "M6 6l12 12M18 6L6 18";
+	const char* disc = "M21 12A9 9 0 1 1 3 12A9 9 0 1 1 21 12ZM13.5 12A1.5 1.5 0 1 1 10.5 12A1.5 1.5 0 1 1 13.5 12Z";
+	const char* sparkle = "M10 3l1.9 5.1L17 10l-5.1 1.9L10 17l-1.9-5.1L3 10l5.1-1.9zM18 14l.9 2.1L21 17l-2.1.9L18 20l-.9-2.1L15 17l2.1-.9z";
 }
 
 static float clamp01(float v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
@@ -89,6 +91,30 @@ static std::wstring codecOf(const std::wstring& path)
 	for (auto& c : ext) c = (wchar_t)towupper(c);
 	if (ext == L"AIF") ext = L"AIFF";
 	return ext;
+}
+
+// Format plus a short quality label, e.g. "FLAC 24/96, Hi-Res".
+static std::wstring qualityOf(const Track& t)
+{
+	std::wstring codec = codecOf(t.path);
+	const TrackInfo& i = t.info;
+	std::wstring spec = codec;
+	if (i.sampleRate)
+	{
+		wchar_t r[32];
+		if (i.sampleRate % 1000) swprintf(r, 32, L"%.1f", i.sampleRate / 1000.0);
+		else swprintf(r, 32, L"%d", i.sampleRate / 1000);
+		spec += L" " + (i.bitsPerSample ? std::to_wstring(i.bitsPerSample) + L"/" : L"") + r;
+	}
+	bool lossless = codec == L"FLAC" || codec == L"WAV" || codec == L"AIFF" || codec == L"ALAC" || codec == L"APE" || codec == L"WV";
+	if (lossless)
+	{
+		if (i.bitsPerSample > 16 || i.sampleRate > 48000) return spec + L", Hi-Res";
+		if (i.bitsPerSample == 16 && i.sampleRate == 44100) return spec + L", CD quality";
+		return spec + L", Lossless";
+	}
+	if (i.bitrateKbps) return spec + L", Lossy " + std::to_wstring(i.bitrateKbps) + L"k";
+	return spec;
 }
 
 // ---------------------------------------------------------------- animation state
@@ -177,6 +203,7 @@ void App::paint()
 	++frameNo;
 	hots.clear();
 	tipText.clear();
+	marqueeActive = false;
 	g.clear(col::base);
 	drawSidebar();
 	drawMain();
@@ -188,6 +215,14 @@ void App::paint()
 	if (confirmOpen) drawConfirm();
 	g.end();
 	trimCovers();   // blocks until the next vsync, so this paces animation frames to the display
+
+	// Sliding text only needs ~30 frames a second, so it gets a timer rather than every vsync.
+	if (marqueeActive != marqueeTimer)
+	{
+		if (marqueeActive) SetTimer(hwnd, 2, 33, nullptr);
+		else KillTimer(hwnd, 2);
+		marqueeTimer = marqueeActive;
+	}
 
 	// While something animates, ask for the next frame straight away instead of using a
 	// timer: WM_TIMER only fires every ~15.6 ms and drifts against the display, which
@@ -205,7 +240,7 @@ void App::drawSidebar()
 
 	float t = navGeo;
 	float x = s.x + 12, w = s.w - 24;
-	float y = s.y + 22;
+	float y = s.y + lerp(22, 18, t);   // collapsed, the cat lines up with the page icons beside it
 
 	// Brand row: the cat, or the collapse toggle while hovered.
 	Rect brand{ s.x, y, s.w, 32 };
@@ -225,7 +260,7 @@ void App::drawSidebar()
 	}
 	g.text(L"LossCat", { logoX + 18 + 12, y, 120, 32 }, 14, Font::UiSemibold, col::text, Align::Left, labelAlpha);
 	hot(brand, Hit::NavToggle);
-	y += 32 + 18;
+	y += 32 + lerp(18, 22, t);
 
 	// Now playing / Home: these shrink away when collapsed (they move to the main panel).
 	struct Item { Hit id; Page p; const char* icon; const wchar_t* label; };
@@ -295,13 +330,39 @@ void App::drawSidebarPlaylists(float y)
 	g.pushClip(sideList);
 	const auto& all = pls.all();
 	float tile = lerp(24, 48, t), rowH = lerp(36, 48, t), gap = lerp(2, 8, t);
-	float total = all.size() * (rowH + gap);
+	float total = (all.size() + 1) * (rowH + gap);   // + the smart playlist
 	sideMaxScroll = total - sideList.h;
 	if (sideMaxScroll < 0) sideMaxScroll = 0;
 	if (sideScroll > sideMaxScroll) sideScroll = sideMaxScroll;
 	float ry = y - sideScroll;
+	// The smart playlist sits right under Favourites.
+	auto smartRow = [&](float sy) {
+		if (sy + rowH < sideList.y || sy > sideList.bottom()) return;
+		Rect row{ x, sy, w, rowH };
+		bool on = page == Page::Smart;
+		bool hov = hovered(Hit::SmartNav);
+		if (t < 0.5f)
+		{
+			if (on) g.fill(row, col::selected, 3, 1 - t * 2);
+			else if (hov) g.fill(row, col::hover, 3, 1 - t * 2);
+		}
+		Rect tl{ x + 6, sy + (rowH - tile) / 2, tile, tile };
+		g.fill(tl, hov && t >= 0.5f ? 0x353535 : 0x2E2E2E, lerp(2, 4, t));
+		float hs = lerp(14, 20, t);
+		g.icon(icons::sparkle, { tl.cx() - hs / 2, tl.cy() - hs / 2, hs, hs }, col::text, false, 1.4f);
+		if (on && t >= 0.5f) g.fill({ s.x + 5, tl.cy() - 9, 3, 18 }, col::text, 1.5f, clamp01((t - 0.5f) * 2));   // selected: a small bar at the edge
+		g.text(L"Lossless 24-bit", { tl.right() + 6, sy, w - tile - 16 - 30, rowH }, 13, Font::Ui, on || hov ? col::text : col::dim, Align::Left, labelAlpha);
+		g.text(std::to_wstring(smartTracks().size()), { x + w - 40, sy, 32, rowH }, 11, Font::Mono, col::muted, Align::Right, labelAlpha);
+		if (hov && t > 0.95f) { tipText = L"Lossless 24-bit"; tipX = tl.right() + 14; tipY = tl.cy(); }
+		Rect hit = t < 0.5f ? row : Rect{ x, sy, tile + 12, rowH };
+		float top = hit.y < sideList.y ? sideList.y : hit.y;
+		float bot = hit.bottom() > sideList.bottom() ? sideList.bottom() : hit.bottom();
+		if (bot > top) hot({ hit.x, top, hit.w, bot - top }, Hit::SmartNav);
+	};
+	if (all.size() <= 1) smartRow(ry + (all.empty() ? 0 : rowH + gap));
 	for (int i = 0; i < (int)all.size(); ++i, ry += rowH + gap)
 	{
+		if (i == 1) { smartRow(ry); ry += rowH + gap; }
 		if (ry + rowH < sideList.y || ry > sideList.bottom()) continue;
 		const Playlist& pl = all[i];
 		Rect row{ x, ry, w, rowH };
@@ -349,7 +410,7 @@ void App::drawSidebarPlaylists(float y)
 				}
 			}
 		}
-		if (on && t >= 0.5f) g.stroke(tl.inset(-1), col::text, 5, 1);
+		if (on && t >= 0.5f) g.fill({ s.x + 5, tl.cy() - 9, 3, 18 }, col::text, 1.5f, clamp01((t - 0.5f) * 2));   // selected: a small bar at the edge
 		if (hov && t > 0.95f && editPlaylist != i)
 		{
 			tipText = widen(pl.name);
@@ -465,6 +526,7 @@ void App::drawMain()
 	case Page::Library: drawLibrary(area); break;
 	case Page::Playlist: drawPlaylist(area); break;
 	case Page::Album: drawAlbum(area); break;
+	case Page::Smart: drawSmart(area); break;
 	case Page::Artist: drawArtist(area); break;
 	case Page::License: drawLicense(area); break;
 	case Page::Now: drawNowPlaying(area); break;
@@ -619,11 +681,11 @@ float App::drawTiles(const std::vector<Tile>& tiles, float x, float y, float w, 
 		}
 		else
 		{
-			if (t.heart)
+			if (t.heart || t.sparkle)
 			{
 				g.fill(img, hov ? 0x353535 : 0x2E2E2E, 2);
 				float hs = img.w * 0.3f;
-				g.icon(icons::heart, { img.cx() - hs / 2, img.cy() - hs / 2, hs, hs }, col::text, true);
+				g.icon(t.heart ? icons::heart : icons::sparkle, { img.cx() - hs / 2, img.cy() - hs / 2, hs, hs }, col::text, t.heart, 1.4f);
 			}
 			else if (t.mosaic.size() > 1)
 			{
@@ -772,6 +834,7 @@ void App::drawLibrary(const Rect& a)
 		g.fill({ cancel.x - 12 - barW, y + 27, barW, 2 }, col::track, 1);
 		g.fill({ cancel.x - 12 - barW, y + 27, barW * done, 2 }, col::text, 1);
 	}
+	else if (scanning) g.text(L"Scanning\x2026 " + std::to_wstring(scanCount) + L" files", { tx + 12, y, bx - tx - 20, 30 }, 12, Font::Ui, col::dim, Align::Right);
 	else if (!notice.empty()) g.text(notice, { tx + 12, y, bx - tx - 20, 30 }, 12, Font::Ui, col::dim, Align::Right);
 	y += 30 + 22;
 
@@ -780,7 +843,7 @@ void App::drawLibrary(const Rect& a)
 	if (libTracks.empty())
 	{
 		pageMaxScroll = 0;
-		g.text(L"Nothing here yet. Import files to copy them into " + libraryDir + L".",
+		g.text(scanning ? L"Scanning your folders\x2026" : L"Nothing here yet. Import files, or add a music folder in Settings to use your music where it is.",
 			{ a.x + 6, y, a.w - 12, 20 }, 13, Font::Ui, col::dim);
 		return;
 	}
@@ -844,6 +907,15 @@ void App::drawLibrary(const Rect& a)
 			}
 			if (tl.mosaic.size() == 1) tl.coverPath = tl.mosaic[0];
 			tiles.push_back(tl);
+			if (p == 0)
+			{
+				Tile sm;
+				sm.title = L"Lossless 24-bit";
+				size_t n = smartTracks().size();
+				sm.sub = n == 1 ? L"1 song" : std::to_wstring(n) + L" songs";
+				sm.sparkle = true;
+				tiles.push_back(sm);
+			}
 		}
 		used = drawTiles(tiles, a.x, cy, a.w, Hit::PlaylistTile, false);
 	}
@@ -927,6 +999,26 @@ namespace
 	}
 }
 
+void App::marquee(const std::wstring& s, const Rect& r, float size, Font f, uint32_t rgb)
+{
+	float tw = g.textWidth(s, size, f);
+	if (tw <= r.w) { g.text(s, r, size, f, rgb); return; }
+	marqueeActive = true;
+	// pause, slide to the end, pause, slide back
+	const double pause = 1800, speed = 0.03;   // px per ms
+	float over = tw - r.w + 4;
+	double slide = over / speed;
+	double e = std::fmod(nowMs() - marqueeStart, 2 * (pause + slide));
+	float off;
+	if (e < pause) off = 0;
+	else if (e < pause + slide) off = (float)((e - pause) * speed);
+	else if (e < 2 * pause + slide) off = over;
+	else off = over - (float)((e - 2 * pause - slide) * speed);
+	g.pushClip(r);
+	g.text(s, { r.x - off, r.y, tw + 8, r.h }, size, f, rgb);
+	g.popClip();
+}
+
 void App::drawAlbum(const Rect& a)
 {
 	listArea = {};
@@ -1005,6 +1097,41 @@ void App::drawAlbum(const Rect& a)
 	std::vector<Track> list;
 	for (int i : grp.tracks) list.push_back(libTracks[i]);
 	drawTrackRows({ a.x, y, a.w, a.bottom() - y }, list, Hit::AlbumRow);
+}
+
+void App::drawSmart(const Rect& a)
+{
+	listArea = {};
+	std::vector<int> idx = smartTracks();
+	float x = a.x + 6, y = a.y;
+	Rect tile{ x, y, 96, 96 };
+	g.fill(tile, 0x232323, 3);
+	g.stroke(tile, 0x313131, 3, 1, 0.6f);
+	g.icon(icons::sparkle, { tile.cx() - 14, tile.cy() - 14, 28, 28 }, col::soft, false, 1.4f);
+	float tx = tile.right() + 24;
+	g.text(L"Smart playlist", { tx, y + 12, 300, 18 }, 12, Font::Ui, col::soft);
+	g.text(L"Lossless 24-bit", { tx, y + 32, a.right() - tx, 32 }, 22, Font::UiMedium, col::text);
+	float cx = tx, cy = y + 70;
+	auto chip = [&](const std::wstring& s) {
+		float cw = g.textWidth(s, 12, Font::Mono) + 16;
+		Rect c{ cx, cy, cw, 24 };
+		g.stroke(c, col::chip, 3);
+		g.text(s, c, 12, Font::Mono, col::text, Align::Center);
+		cx += cw + 8;
+	};
+	chip(L"bit depth \x2265 24");
+	chip(L"lossless only");
+	std::wstring count = (idx.size() == 1 ? L"1 song" : std::to_wstring(idx.size()) + L" songs") + L", updates automatically";
+	g.text(count, { cx + 2, cy, a.right() - cx, 24 }, 13, Font::Ui, col::dim);
+	y += 96 + 28;
+	if (idx.empty())
+	{
+		g.text(L"No 24-bit lossless songs in your library yet. They show up here as soon as you import some.", { x, y, a.w - 12, 20 }, 13, Font::Ui, col::dim);
+		return;
+	}
+	std::vector<Track> list;
+	for (int i : idx) list.push_back(libTracks[i]);
+	drawTrackRows({ a.x, y, a.w, a.bottom() - y }, list, Hit::SmartRow);
 }
 
 void App::drawArtist(const Rect& a)
@@ -1107,6 +1234,7 @@ std::wstring App::signalOutput() const
 
 void App::drawNowPlaying(const Rect& a)
 {
+	listArea = {};
 	if (current < 0)
 	{
 		drawEmpty(a, L"Nothing playing", L"Drop audio files on this window, or open them, and they play here.", true);
@@ -1117,6 +1245,8 @@ void App::drawNowPlaying(const Rect& a)
 
 	float coverW = (a.w - 36) * 0.4f;
 	if (coverW > 340) coverW = 340;
+	// the cover ends level with the line under the tabs
+	if (npCoverBottom > 0 && npCoverBottom - 4 < coverW) coverW = npCoverBottom - 4;
 	if (coverW < 160) coverW = 160;
 	Rect cv{ a.x + 6, a.y + 4, coverW, coverW };
 	if (ID2D1Bitmap* bmp = currentCover()) g.image(bmp, cv, 2);
@@ -1213,28 +1343,35 @@ void App::drawNowPlaying(const Rect& a)
 
 	{
 		bool have = inLibrary(tr.path);
-		const wchar_t* label = have ? L"In library" : L"Add to library";
-		float bw = 12 + 16 + 8 + g.textWidth(label, 12, Font::Ui) + 12;
-		Rect b{ x, y, bw, 30 };
-		if (!have && hovered(Hit::AddToLibrary)) g.fill(b, col::hover, 3);
-		g.stroke(b, col::chip, 3);
-		g.icon(have ? icons::check : icons::plus, { b.x + 12, b.cy() - 8, 16, 16 }, have ? col::dim : col::text, false, 1.6f);
-		g.text(label, { b.x + 36, b.y, bw - 44, 30 }, 12, Font::Ui, have ? col::dim : col::text);
-		if (!have) hot(b, Hit::AddToLibrary);
-		float nx = b.right() + 12;
+		float bx = x;
+		auto button = [&](const std::wstring& label, const char* icon, bool filled, bool on, Hit id) {
+			float bw = 12 + 16 + 8 + g.textWidth(label, 12, Font::Ui) + 12;
+			Rect b{ bx, y, bw, 30 };
+			if (on) g.fill(b, 0x272727, 3);
+			else if (hovered(id)) g.fill(b, col::hover, 3);
+			g.stroke(b, col::chip, 3);
+			g.icon(icon, { b.x + 12, b.cy() - 8, 16, 16 }, col::text, filled, 1.6f);
+			g.text(label, { b.x + 36, b.y, bw - 44, 30 }, 12, Font::Ui, col::text);
+			hot(b, id);
+			bx = b.right() + 8;
+		};
 		if (have)
 		{
 			bool fav = inPlaylist(0, tr.path);
-			const wchar_t* fl = fav ? L"In Favourites" : L"Favourite";
-			float fw = 12 + 16 + 8 + g.textWidth(fl, 12, Font::Ui) + 12;
-			Rect f{ b.right() + 8, y, fw, 30 };
-			if (fav) g.fill(f, 0x272727, 3);
-			else if (hovered(Hit::Favourite)) g.fill(f, col::hover, 3);
-			g.stroke(f, col::chip, 3);
-			g.icon(icons::heart, { f.x + 12, f.cy() - 8, 16, 16 }, col::text, fav, 1.6f);
-			g.text(fl, { f.x + 36, f.y, fw - 44, 30 }, 12, Font::Ui, col::text);
-			hot(f, Hit::Favourite);
-			nx = f.right() + 12;
+			button(fav ? L"In Favourites" : L"Favourite", icons::heart, fav, fav, Hit::Favourite);
+			button(L"Go to album", icons::disc, false, false, Hit::GoToAlbum);
+		}
+		else button(L"Add to library", icons::plus, false, false, Hit::AddToLibrary);
+		float nx = bx + 4;
+		if (have)
+		{
+			Rect more{ bx, y, 40, 30 };
+			if (hovered(Hit::NowMore) || (menuOpen && nowMoreAt.x == more.x && nowMoreAt.y == more.y)) g.fill(more, col::hover, 3);
+			g.stroke(more, col::chip, 3);
+			for (int d = -1; d <= 1; ++d) g.circle(more.cx() + d * 5.0f, more.cy(), 1.6f, col::text);
+			hot(more, Hit::NowMore);
+			nowMoreAt = more;
+			nx = more.right() + 12;
 		}
 		if (!notice.empty()) g.text(notice, { nx, y, a.right() - nx, 30 }, 12, Font::Ui, col::dim);
 		y += 30 + 24;
@@ -1255,6 +1392,11 @@ void App::drawNowPlaying(const Rect& a)
 		tx += tw + 22;
 	}
 	g.line(x, y + 35.5f, a.right(), y + 35.5f, 0xEBEBEB, 1, 0.16f);
+	if (std::fabs((y + 36 - a.y) - npCoverBottom) > 0.5f)
+	{
+		npCoverBottom = y + 36 - a.y;   // the title can wrap differently at the new width; settle next frame
+		InvalidateRect(hwnd, nullptr, FALSE);
+	}
 	y += 36 + 6;
 
 	Rect body{ x, y, w, a.bottom() - y };
@@ -1280,32 +1422,237 @@ void App::drawNowPlaying(const Rect& a)
 	}
 	else if (npTab == 1)
 	{
-		std::wstring folder = tr.path.substr(0, tr.path.find_last_of(L"\\/"));
-		std::wstring fmt = signalSource();
-		struct Row { const wchar_t* k; std::wstring v; bool mono; };
-		const Row rows[] = {
-			{ L"Album", tr.album.empty() ? L"Unknown" : tr.album, false },
-			{ L"Artist", tr.artist, false },
-			{ L"Released", info.year ? std::to_wstring(info.year) : L"Unknown", false },
-			{ L"Track", info.track ? std::to_wstring(info.track) : L"Unknown", false },
-			{ L"Length", fmtTime(player.duration()), true },
-			{ L"Format", fmt, true },
-			{ L"Folder", folder, true },
+		// the album as the library knows it
+		nowAlbum = -1;
+		for (int k = 0; k < (int)albums.size() && nowAlbum < 0; ++k)
+			for (int t : albums[k].tracks)
+				if (libTracks[t].path == tr.path) { nowAlbum = k; break; }
+		const Group* al = nowAlbum >= 0 ? &albums[nowAlbum] : nullptr;
+		int albumSecs = 0;
+		if (al) for (int t : al->tracks) albumSecs += libTracks[t].info.durationMs / 1000;
+
+		std::wstring spec = qualityOf(tr), kind;
+		size_t comma = spec.find(L", ");
+		if (comma != std::wstring::npos) { kind = spec.substr(comma + 2); spec.resize(comma); }
+
+		struct Row { const wchar_t* k; std::wstring v; bool mono; std::wstring extra; };
+		std::vector<Row> rows = {
+			{ L"Album", tr.album.empty() ? L"Unknown" : tr.album, false, L"" },
+			{ L"Artist", tr.artist, false, L"" },
+			{ L"Released", info.year ? std::to_wstring(info.year) : L"Unknown", false, L"" },
 		};
+		if (al)
+		{
+			rows.push_back({ L"Tracks", std::to_wstring(al->tracks.size()) + (al->tracks.size() == 1 ? L" track" : L" tracks"), false, L"" });
+			rows.push_back({ L"Length", fmtTime(albumSecs), true, L"" });
+		}
+		rows.push_back({ L"Format", spec, true, kind });
+
+		// Wide enough: details on the left, the album's songs beside them. Otherwise stacked.
+		bool side = al && w >= 480;
+		float infoW = side ? w * 0.44f : w;
+		float top = y;
 		for (const Row& r : rows)
 		{
 			if (y + 26 > a.bottom()) break;
-			g.text(r.k, { x, y, 80, 22 }, 13, Font::Ui, col::muted);
-			g.text(r.v, { x + 98, y, w - 98, 22 }, 13, r.mono ? Font::Mono : Font::Ui, col::text);
+			g.text(r.k, { x, y, 80, 26 }, 13, Font::Ui, col::muted);
+			float vx = x + 78, vw = infoW - 78;
+			if (r.extra.empty()) marquee(r.v, { vx, y, vw, 26 }, 13, r.mono ? Font::Mono : Font::Ui, col::text);
+			else
+			{
+				// the quality as a badge beside the format, when there's room for it
+				g.text(r.v, { vx, y, vw, 26 }, 13, r.mono ? Font::Mono : Font::Ui, col::text);
+				float tw = g.textWidth(r.v, 13, r.mono ? Font::Mono : Font::Ui) + 10;
+				float bw = g.textWidth(r.extra, 11, Font::Ui) + 14;
+				if (tw + bw <= vw)
+				{
+					Rect badge{ vx + tw, y + 3, bw, 20 };
+					g.stroke(badge, col::chip, 3);
+					g.text(r.extra, badge, 11, Font::Ui, col::soft, Align::Center);
+				}
+			}
 			y += 30;
+		}
+
+		nowAlbumArea = {};
+		if (al)
+		{
+			float lx = x, lw = w;
+			if (side) { lx = x + w * 0.47f; lw = w - w * 0.47f; y = top + 10; }
+			else y += 12;
+			// the list sits on its own card
+			int n = (int)al->tracks.size();
+			const float rowH = 30, pad = 6;
+			float cardH = std::min(std::min(n, 5) * rowH + pad * 2, a.bottom() - 4 - y);   // five rows at most; the rest scroll
+			Rect card{ lx - 8, y, lw + 8, cardH };
+			g.fill(card, 0x202020, 6);
+			g.stroke(card, 0x2C2C2C, 6);
+			lx += 6; lw -= 12;
+			y += pad;
+			nowAlbumArea = { card.x + 1, y, card.w - 2, cardH - pad * 2 };
+			nowAlbumMaxScroll = std::max(0.0f, n * rowH - nowAlbumArea.h);
+			int here = 0;
+			for (int k = 0; k < n; ++k) if (libTracks[al->tracks[k]].path == tr.path) here = k;
+			if (nowAlbumFor != tr.path)   // new song: bring it into view
+			{
+				nowAlbumFor = tr.path;
+				marqueeStart = nowMs();
+				float want = here * rowH - rowH;
+				nowAlbumScroll = want < 0 ? 0 : want;
+			}
+			if (nowAlbumScroll > nowAlbumMaxScroll) nowAlbumScroll = nowAlbumMaxScroll;
+
+			g.pushClip(nowAlbumArea);
+			for (int k = 0; k < n; ++k)
+			{
+				float ry = y + k * rowH - nowAlbumScroll;
+				if (ry + rowH < nowAlbumArea.y) continue;
+				if (ry > nowAlbumArea.bottom()) break;
+				const Track& t = libTracks[al->tracks[k]];
+				bool on = k == here;
+				Rect r{ card.x + 4, ry, card.w - 8, rowH };
+				if (hovered(Hit::NowAlbumRow, k)) g.fill(r, 0x2A2A2A, 4);
+				int no = t.info.track ? t.info.track : k + 1;
+				g.text(std::to_wstring(no), { lx, ry, 24, rowH }, 12, on ? Font::UiSemibold : Font::Mono, on ? col::white : col::muted);
+				g.text(t.title, { lx + 30, ry, lw - 30 - 58, rowH }, 13, on ? Font::UiMedium : Font::Ui, on ? col::white : col::text);
+				g.text(fmtTime(t.info.durationMs / 1000.0), { lx + lw - 56, ry, 50, rowH }, 12, Font::Mono, on ? col::text : col::soft, Align::Right);
+				if (k < n - 1) g.line(lx, ry + rowH - 0.5f, lx + lw, ry + rowH - 0.5f, 0x2A2A2A, 1);
+				float t0 = std::max(ry, nowAlbumArea.y), t1 = std::min(ry + rowH, nowAlbumArea.bottom());
+				if (t1 > t0) hot({ r.x, t0, r.w, t1 - t0 }, Hit::NowAlbumRow, k);
+			}
+			g.popClip();
+			if (nowAlbumMaxScroll > 0)
+			{
+				float th = std::max(20.0f, nowAlbumArea.h * nowAlbumArea.h / (n * rowH));
+				float ty = nowAlbumArea.y + (nowAlbumArea.h - th) * (nowAlbumScroll / nowAlbumMaxScroll);
+				g.fill({ card.right() - 5, ty, 2, th }, 0x4A4A4A, 1);
+			}
 		}
 	}
 	else
+		drawLyrics(tr, body);
+}
+
+namespace
+{
+	// Plain lines for display: LRC timestamps and [ar:...] style headers are dropped.
+	std::vector<std::wstring> lyricDisplayLines(const std::wstring& text)
 	{
-		if (info.lyrics.empty())
-			g.text(L"No lyrics in this file's tags.", { x, y + 4, w, 20 }, 14, Font::Ui, col::muted);
-		else
-			g.textBlock(widen(info.lyrics), { x, y + 4, w, body.h }, 14, Font::Ui, col::soft, (int)(body.h / 22), 22);
+		std::vector<std::wstring> lines;
+		size_t start = 0;
+		while (start <= text.size())
+		{
+			size_t end = text.find(L'\n', start);
+			if (end == std::wstring::npos) end = text.size();
+			std::wstring line = text.substr(start, end - start);
+			if (!line.empty() && line.back() == L'\r') line.pop_back();
+			bool header = false;
+			while (line.size() > 2 && line[0] == L'[')
+			{
+				size_t close = line.find(L']');
+				if (close == std::wstring::npos) break;
+				bool stamp = close > 1 && iswdigit(line[1]);
+				if (!stamp && close == line.size() - 1 && line.find(L':') < close) header = true;
+				if (!stamp) break;
+				line.erase(0, close + 1);
+			}
+			if (!header) lines.push_back(line);
+			start = end + 1;
+		}
+		while (!lines.empty() && lines.back().find_first_not_of(L" \t") == std::wstring::npos) lines.pop_back();
+		return lines;
+	}
+}
+
+void App::drawLyrics(const Track& tr, const Rect& body)
+{
+	if (lyricsPath != tr.path)
+	{
+		lyricsPath = tr.path;
+		lyricScroll = 0;
+		lyricSelA = lyricSelB = -1;
+	}
+	const std::wstring& text = lyricsFor(tr);
+	lyricLines = lyricDisplayLines(text);
+	bool editable = inLibrary(tr.path) && !busyImporting();
+	float x = body.x, w = body.w, y = body.y;
+
+	// a row of small text actions
+	float lx = x;
+	auto action = [&](const std::wstring& label, Hit id) {
+		float tw = g.textWidth(label, 12, Font::Ui);
+		Rect r{ lx, y + 2, tw, 20 };
+		bool hov = hovered(id);
+		g.text(label, r, 12, Font::Ui, hov ? col::white : col::soft);
+		g.line(r.x, r.bottom() - 2.5f, r.right(), r.bottom() - 2.5f, hov ? col::white : 0x5A5A5A, 1);
+		hot(r.inset(-4), id);
+		lx += tw + 18;
+	};
+	if (lyricLines.empty())
+	{
+		g.text(L"No lyrics in this file.", { x, y, w, 24 }, 14, Font::Ui, col::muted);
+		y += 30;
+		if (editable)
+		{
+			action(L"Paste from clipboard", Hit::LyricPaste);
+			action(L"Load .lrc or .txt\x2026", Hit::LyricFile);
+		}
+		else g.text(L"Add the song to your library to save lyrics into it.", { x, y + 2, w, 20 }, 12, Font::Ui, col::dim);
+		lyricLines.clear();
+		lyricTops.clear();
+		lyricArea = {};
+		return;
+	}
+	int a = std::min(lyricSelA, lyricSelB), b = std::max(lyricSelA, lyricSelB);
+	action(lyricSelA < 0 ? L"Copy" : a == b ? L"Copy line" : L"Copy " + std::to_wstring(b - a + 1) + L" lines", Hit::LyricCopy);
+	if (editable)
+	{
+		action(L"Replace from clipboard", Hit::LyricPaste);
+		action(L"Load file\x2026", Hit::LyricFile);
+		action(L"Remove", Hit::LyricRemove);
+	}
+	y += 34;
+
+	lyricArea = { x - 10, y, w + 10, body.bottom() - y };
+	lyricTops.clear();
+	float cy = 0;
+	std::vector<float> heights;
+	for (const std::wstring& line : lyricLines)
+	{
+		lyricTops.push_back(cy);
+		float h = line.empty() ? 22.0f : std::max(22.0f, g.textHeight(line, w, 14, Font::Ui, 22));
+		heights.push_back(h);
+		cy += h;
+	}
+	lyricMaxScroll = cy - lyricArea.h + 8;
+	if (lyricMaxScroll < 0) lyricMaxScroll = 0;
+	if (lyricScroll > lyricMaxScroll) lyricScroll = lyricMaxScroll;
+
+	g.pushClip(lyricArea);
+	for (int i = 0; i < (int)lyricLines.size(); ++i)
+	{
+		float ly = lyricArea.y + lyricTops[i] - lyricScroll;
+		if (ly + heights[i] < lyricArea.y) continue;
+		if (ly > lyricArea.bottom()) break;
+		Rect r{ lyricArea.x, ly, lyricArea.w, heights[i] };
+		bool sel = lyricSelA >= 0 && i >= a && i <= b;
+		if (sel) g.fill(r, col::selected, 2);
+		else if (hovered(Hit::LyricLine, i) && !lyricLines[i].empty()) g.fill(r, col::hover, 2, 0.6f);
+		if (!lyricLines[i].empty())
+			g.textBlock(lyricLines[i], { x, ly, w, heights[i] }, 14, Font::Ui, sel ? col::white : col::soft, 8, 22);
+		float top = std::max(ly, lyricArea.y), bot = std::min(ly + heights[i], lyricArea.bottom());
+		if (bot > top) hot({ r.x, top, r.w, bot - top }, Hit::LyricLine, i);
+	}
+	g.popClip();
+
+	if (lyricMaxScroll > 0)
+	{
+		float trackH = lyricArea.h, thumbH = std::max(24.0f, trackH * lyricArea.h / (cy + 8));
+		float ty = lyricArea.y + (trackH - thumbH) * (lyricScroll / lyricMaxScroll);
+		bool active = hovered(Hit::LyricScroll) || (dragging && pressHit == Hit::LyricScroll);
+		g.fill({ lyricArea.right() + (active ? 4.0f : 6.0f), ty, active ? 6.0f : 3.0f, thumbH }, active ? 0x6A6A6A : 0x4A4A4A, 3);
+		lyricThumbH = thumbH;
+		hot({ lyricArea.right() + 1, lyricArea.y, 12, trackH }, Hit::LyricScroll);
 	}
 }
 
@@ -1336,22 +1683,69 @@ void App::drawSettings(const Rect& a)
 	swprintf(fmt, 96, L"%u Hz, %u channels, %hs", player.deviceSampleRate(), player.deviceChannels(), player.deviceFormatName());
 	section(L"Audio");
 	row(L"Output device", widen(player.backendName()) + L", shared mode", audioOk ? widen(player.deviceName()) : L"No device", false, false);
-	row(L"Device format", L"What Windows mixes at; files at other rates are resampled", fmt, false, true);
+	row(L"Device format", L"", fmt, false, true);
 
 	section(L"Library");
 	{
-		wchar_t n[48];
-		swprintf(n, 48, libTracks.size() == 1 ? L"%zu song. Press F5 to rescan" : L"%zu songs. Press F5 to rescan", libTracks.size());
-		g.line(x, y + 0.5f, x + w, y + 0.5f, col::line, 1);
-		g.text(L"Library folder", { x, y + 11, w * 0.55f, 20 }, 14, Font::Ui, col::text);
-		g.text(libraryDir.empty() ? L"Not found" : libraryDir, { x, y + 31, w - 180, 18 }, 12, Font::Mono, col::dim);
-		float bw = g.textWidth(L"Open in Explorer", 13, Font::Ui) + 24;
-		Rect b{ x + w - bw, y + 14, bw, 32 };
-		g.stroke(b, hovered(Hit::OpenLibraryFolder) ? 0x5A5A5A : col::chip, 3);
-		g.text(L"Open in Explorer", b, 13, Font::Ui, col::soft, Align::Center);
-		hotVisible(b, Hit::OpenLibraryFolder, -1);
+		// small outlined buttons, right-aligned, drawn right to left
+		auto smallButton = [&](float& bx, const wchar_t* label, Hit id, int index) {
+			float bw = g.textWidth(label, 13, Font::Ui) + 24;
+			Rect b{ bx - bw, y + 14, bw, 32 };
+			if (hovered(id, index)) g.fill(b, col::hover, 3);
+			g.stroke(b, hovered(id, index) ? 0x5A5A5A : col::chip, 3);
+			g.text(label, b, 13, Font::Ui, col::soft, Align::Center);
+			hotVisible(b, id, index);
+			bx = b.x - 8;
+		};
+		auto folderRow = [&](const std::wstring& title, const std::wstring& path, const std::wstring& note) {
+			g.line(x, y + 0.5f, x + w, y + 0.5f, col::line, 1);
+			g.text(title, { x, y + 11, w - 260, 20 }, 14, Font::Ui, col::text);
+			std::wstring sub = note.empty() ? path : path + L"  \x00B7  " + note;
+			g.text(sub, { x, y + 31, w - 260, 18 }, 12, Font::Mono, col::dim);
+		};
+		std::wstring note = moving ? L"moving\x2026 " + std::to_wstring(moveDone) + L" of " + std::to_wstring(moveTotal) + L" files" : L"imports and playlists live here";
+		folderRow(L"LossCat folder", libraryDir.empty() ? L"Not found" : libraryDir, note);
+		float bx = x + w;
+		if (!moving) smallButton(bx, L"Change\x2026", Hit::ChangeLibraryFolder, -1);
+		smallButton(bx, L"Open", Hit::OpenLibraryFolder, -1);
 		y += 60;
-		row(L"Songs", L"", n, false, true);
+		for (int i = 0; i < (int)musicFolders.size(); ++i)
+		{
+			const std::wstring& f = musicFolders[i];
+			std::wstring name = f.substr(f.find_last_of(L'\\') + 1);
+			bool there = GetFileAttributesW(f.c_str()) != INVALID_FILE_ATTRIBUTES;
+			folderRow(name.empty() ? f : name, f, there ? L"scanned in place" : L"not found right now");
+			bx = x + w;
+			smallButton(bx, L"Remove", Hit::RemoveMusicFolder, i);
+			if (there) smallButton(bx, L"Open", Hit::OpenMusicFolder, i);
+			y += 60;
+		}
+		g.line(x, y + 0.5f, x + w, y + 0.5f, col::line, 1);
+		std::wstring status;
+		if (scanning) status = L"Scanning\x2026 " + std::to_wstring(scanCount) + L" files looked at";
+		else
+		{
+			wchar_t n[64];
+			swprintf(n, 64, libTracks.size() == 1 ? L"%zu song. Press F5 to rescan" : L"%zu songs. Press F5 to rescan", libTracks.size());
+			status = n;
+		}
+		g.text(L"Add a folder to play your music where it is, without copying it.", { x, y + 11, w - 200, 20 }, 13, Font::Ui, col::soft);
+		g.text(status, { x, y + 31, w - 200, 18 }, 12, Font::Ui, col::dim);
+		bx = x + w;
+		smallButton(bx, L"Add folder\x2026", Hit::AddMusicFolder, -1);
+		y += 60;
+		if (!hiddenFiles.empty())
+		{
+			g.line(x, y + 0.5f, x + w, y + 0.5f, col::line, 1);
+			std::wstring h = hiddenFiles.size() == 1 ? L"1 hidden song" : std::to_wstring(hiddenFiles.size()) + L" hidden songs";
+			g.text(h, { x, y + 11, w - 200, 20 }, 14, Font::Ui, col::text);
+			g.text(L"Removed from LossCat but still in your folders", { x, y + 31, w - 200, 18 }, 12, Font::Ui, col::dim);
+			bx = x + w;
+			smallButton(bx, L"Show again", Hit::ShowHidden, -1);
+			y += 60;
+		}
+		g.line(x, y - 0.5f, x + w, y - 0.5f, col::line, 1);
+		y += 30;
 	}
 
 	links.clear();
@@ -1373,7 +1767,7 @@ void App::drawSettings(const Rect& a)
 		g.icon(icons::cat, logo, col::text, true);
 		g.icon(icons::catTail, logo, col::text, false, 1.8f);
 		g.text(L"LossCat", { x + 36, y + 11, 300, 20 }, 14, Font::UiMedium, col::text);
-		g.text(L"Version 0.1.0, \u00A9 2026 SegCat", { x + 36, y + 31, 400, 18 }, 12, Font::Ui, col::dim);
+		g.text(L"Version 0.2.0, \u00A9 2026 SegCat", { x + 36, y + 31, 400, 18 }, 12, Font::Ui, col::dim);
 		link(L"MIT License", L"license:201|LossCat", x + w, y + 20);
 		y += 60;
 	}
@@ -1539,21 +1933,30 @@ void App::drawConfirm()
 {
 	hot({ 0, 0, W, H }, Hit::Panel);
 	g.fill({ 0, 0, W, H }, 0x000000, 0, 0.5f);
-	float w = 400, h = 150;
+	float w = 420, h = 170;
 	Rect d{ W / 2 - w / 2, H / 2 - h / 2 - 40, w, h };
 	g.fill(d, 0x1E1E1E, 8);
 	g.stroke(d, 0x333333, 8);
 	g.text(confirmTitle, { d.x + 24, d.y + 22, w - 48, 22 }, 15, Font::UiMedium, col::text);
-	bool deleting = pendingDeletePlaylist > 0;
-	g.textBlock(deleting ? L"The songs stay in your library. Only the playlist goes."
+	bool deleting = pendingDeletePlaylist > 0 || pendingRemoveLyrics;
+	int imported = 0;
+	for (const auto& p : pendingRemove) if (isImported(p)) ++imported;
+	bool onlyHide = !deleting && imported == 0, mixed = !deleting && imported > 0 && imported < (int)pendingRemove.size();
+	g.textBlock(!confirmBody.empty() ? confirmBody
+		: pendingRemoveLyrics ? L"They're deleted from the file's tags. The song itself isn't changed."
+		: deleting ? L"The songs stay in your library. Only the playlist goes."
+		: onlyHide ? L"The files stay in your folder; LossCat just stops showing them. You can show them again in Settings."
+		: mixed ? L"Copies in the LossCat folder go to the Recycle Bin. Songs from your own folders are only hidden."
 		: L"They come out of your LossCat library. You can restore them from the Recycle Bin.",
-		{ d.x + 24, d.y + 52, w - 48, 40 }, 13, Font::Ui, col::dim, 2, 20);
+		{ d.x + 24, d.y + 52, w - 48, 60 }, 13, Font::Ui, col::dim, 3, 20);
 	float bh = 32, by = d.bottom() - 20 - bh;
-	const wchar_t* okLabel = deleting ? L"Delete playlist" : L"Move to Recycle Bin";
+	bool moveFolder = !pendingLibraryDir.empty();
+	const wchar_t* okLabel = moveFolder ? L"Move" : pendingRemoveLyrics ? L"Remove lyrics" : deleting ? L"Delete playlist" : onlyHide ? L"Hide" : L"Move to Recycle Bin";
 	float okW = g.textWidth(okLabel, 13, Font::UiMedium) + 28;
 	Rect ok{ d.right() - 20 - okW, by, okW, bh };
-	g.fill(ok, hovered(Hit::ConfirmOk) ? 0xD9483F : 0xC0403A, 3);
-	g.text(okLabel, ok, 13, Font::UiMedium, col::white, Align::Center);
+	if (moveFolder) g.fill(ok, hovered(Hit::ConfirmOk) ? 0xFFFFFF : col::text, 3);   // not destructive, so not red
+	else g.fill(ok, hovered(Hit::ConfirmOk) ? 0xD9483F : 0xC0403A, 3);
+	g.text(okLabel, ok, 13, Font::UiMedium, moveFolder ? 0x131313 : col::white, Align::Center);
 	hot(ok, Hit::ConfirmOk);
 	float cW = g.textWidth(L"Cancel", 13, Font::UiMedium) + 28;
 	Rect cancel{ ok.x - 8 - cW, by, cW, bh };

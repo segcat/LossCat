@@ -204,6 +204,17 @@ float Gfx::textBlock(const std::wstring& s, const Rect& r, float size, Font f, u
 	return m.height < maxH ? m.height : maxH;
 }
 
+float Gfx::textHeight(const std::wstring& s, float width, float size, Font f, float lineHeight)
+{
+	if (s.empty() || width <= 0) return 0;
+	ComPtr<IDWriteTextLayout> layout;
+	if (FAILED(dwrite->CreateTextLayout(s.c_str(), (UINT32)s.size(), format(size, f), width, 100000, &layout))) return 0;
+	layout->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, lineHeight, lineHeight * 0.8f);
+	DWRITE_TEXT_METRICS m{};
+	layout->GetMetrics(&m);
+	return m.height;
+}
+
 float Gfx::textWidth(const std::wstring& s, float size, Font f)
 {
 	if (s.empty()) return 0;

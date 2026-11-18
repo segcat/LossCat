@@ -118,10 +118,11 @@ bool Playlists::add(int index, const std::string& absolutePathUtf8)
     }
 
     std::filesystem::path abs(std::u8string(absolutePathUtf8.begin(), absolutePathUtf8.end()));
+    // Songs under the library folder are stored relative to it; songs from other folders by full path.
     std::filesystem::path rel = abs.lexically_relative(libraryRoot);
     if (rel.empty() || *rel.begin() == "..")
     {
-        return false;
+        rel = abs;
     }
 
     std::u8string rel8 = rel.u8string();

@@ -6,12 +6,15 @@
 #include <shellapi.h>
 #include <commdlg.h>
 #include <shlobj.h>
+#include <shobjidl.h>
 #include <knownfolders.h>
 #include <cstdlib>
 #include <cstdio>
+#include <cstring>
 #include <iterator>
 #include <cwctype>
 #include <map>
+#include <filesystem>
 #include <algorithm>
 
 #pragma comment(lib, "dwmapi")
@@ -28,6 +31,8 @@
 #define LC_DWMWCP_ROUND 2
 #define WM_IMPORT_DONE (WM_APP + 1)
 #define WM_COVER_DONE (WM_APP + 2)
+#define WM_SCAN_DONE (WM_APP + 3)
+#define WM_MOVE_DONE (WM_APP + 4)
 
 static const wchar_t* kClassName = L"LossCat";
 static const UINT_PTR kTimer = 1;
@@ -123,7 +128,7 @@ bool App::create(HINSTANCE inst, int show)
 	if (audioOk) player.setVolume(volume);
 	else error = L"No audio output device";
 
-	loadLibrary();
+	loadState();   // also opens the library
 
 	ShowWindow(hwnd, show);
 	return true;
@@ -268,6 +273,16 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 			TrackMouseEvent(&tme);
 			tracking = true;
 		}
+		if (selectingLyrics)
+		{
+			lyricSelB = lyricLineAt(y);
+			if (y < lyricArea.y) lyricScroll -= 12;
+			else if (y > lyricArea.bottom()) lyricScroll += 12;
+			if (lyricScroll < 0) lyricScroll = 0;
+			if (lyricScroll > lyricMaxScroll) lyricScroll = lyricMaxScroll;
+			InvalidateRect(hwnd, nullptr, FALSE);
+			return 0;
+		}
 		if (dragging)
 		{
 			if (pressHit == Hit::Seek && seekBar.w > 0)
@@ -275,6 +290,11 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 				float f = (x - seekBar.x) / seekBar.w;
 				f = f < 0 ? 0 : f > 1 ? 1 : f;
 				dragSeconds = f * player.duration();
+			}
+			else if (pressHit == Hit::LyricScroll && lyricArea.h > lyricThumbH)
+			{
+				float f = (y - lyricArea.y - lyricThumbH / 2) / (lyricArea.h - lyricThumbH);
+				lyricScroll = (f < 0 ? 0 : f > 1 ? 1 : f) * lyricMaxScroll;
 			}
 			else if (pressHit == Hit::Volume && volumeBar.w > 0)
 			{
@@ -311,7 +331,14 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 			InvalidateRect(hwnd, nullptr, FALSE);
 			return 0;
 		}
-		if (pressHit == Hit::Seek || pressHit == Hit::Volume)
+		if (pressHit == Hit::LyricLine)
+		{
+			lyricSelA = lyricSelB = pressIndex;
+			selectingLyrics = true;
+			SetCapture(hwnd);
+		}
+		else if (pressHit != Hit::LyricCopy && pressHit != Hit::LyricScroll) lyricSelA = lyricSelB = -1;
+		if (pressHit == Hit::Seek || pressHit == Hit::Volume || pressHit == Hit::LyricScroll)
 		{
 			if (pressHit == Hit::Seek && current < 0) { pressHit = Hit::None; return 0; }
 			dragging = true;
@@ -333,7 +360,12 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 	case WM_LBUTTONUP:
 	{
 		float x = GET_X_LPARAM(lp) / scale, y = GET_Y_LPARAM(lp) / scale;
-		if (dragging)
+		if (selectingLyrics)
+		{
+			selectingLyrics = false;
+			ReleaseCapture();
+		}
+		else if (dragging)
 		{
 			dragging = false;
 			ReleaseCapture();
@@ -361,6 +393,20 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 				sideScroll -= step;
 				if (sideScroll < 0) sideScroll = 0;
 				if (sideScroll > sideMaxScroll) sideScroll = sideMaxScroll;
+				InvalidateRect(hwnd, nullptr, FALSE);
+			}
+			else if (page == Page::Now && npTab == 1 && nowAlbumArea.contains(x, y))
+			{
+				nowAlbumScroll -= step;
+				if (nowAlbumScroll < 0) nowAlbumScroll = 0;
+				if (nowAlbumScroll > nowAlbumMaxScroll) nowAlbumScroll = nowAlbumMaxScroll;
+				InvalidateRect(hwnd, nullptr, FALSE);
+			}
+			else if (page == Page::Now && npTab == 2 && lyricArea.contains(x, y))
+			{
+				lyricScroll -= step;
+				if (lyricScroll < 0) lyricScroll = 0;
+				if (lyricScroll > lyricMaxScroll) lyricScroll = lyricMaxScroll;
 				InvalidateRect(hwnd, nullptr, FALSE);
 			}
 			else if (listArea.contains(x, y))
@@ -411,6 +457,11 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 			return 0;
 		}
 		if (menuOpen && wp == VK_ESCAPE) { menuOpen = false; InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+		bool onLyrics = page == Page::Now && npTab == 2 && current >= 0;
+		if (onLyrics && ctrl && wp == 'C') { copyLyrics(); return 0; }
+		if (onLyrics && ctrl && wp == 'A') { lyricSelA = 0; lyricSelB = (int)lyricLines.size() - 1; InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+		if (onLyrics && ctrl && wp == 'V') { pasteLyrics(); return 0; }
+		if (onLyrics && wp == VK_ESCAPE && lyricSelA >= 0) { lyricSelA = lyricSelB = -1; InvalidateRect(hwnd, nullptr, FALSE); return 0; }
 		if (wp == VK_SPACE) togglePlay();
 		else if (wp == VK_ESCAPE && queueOpen) click(Hit::QueueButton, -1);
 		else if (wp == VK_LEFT) seekTo(player.position() - 5);
@@ -419,7 +470,7 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 		else if (ctrl && wp == VK_OEM_COMMA) { page = Page::Settings; InvalidateRect(hwnd, nullptr, FALSE); }
 		else if (ctrl && wp == 'B') click(Hit::NavToggle, -1);
 		else if (ctrl && wp == 'L') click(Hit::BarFavourite, -1);
-		else if (wp == VK_F5) loadLibrary();
+		else if (wp == VK_F5) loadLibrary(true);
 		return 0;
 	}
 	case WM_APPCOMMAND:
@@ -475,6 +526,7 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 		paint();
 		return 0;
 	case WM_TIMER:
+		if (wp == 2 || wp == 3) { InvalidateRect(hwnd, nullptr, FALSE); return 0; }   // marquee text, scan progress
 		tick();
 		return 0;
 	case WM_IMPORT_DONE:
@@ -483,10 +535,22 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 	case WM_COVER_DONE:
 		finishCover();
 		return 0;
+	case WM_SCAN_DONE:
+		finishScan();
+		return 0;
+	case WM_MOVE_DONE:
+		finishLibraryMove();
+		return 0;
+	case WM_ENDSESSION:
+		if (wp) saveState();   // Windows is shutting down or logging off; WM_DESTROY may never come
+		return 0;
 	case WM_DESTROY:
 		importCancel = true;
 		if (importThread.joinable()) importThread.join();   // stops after the file it's copying
 		if (coverThread.joinable()) coverThread.join();
+		if (scanThread.joinable()) scanThread.join();
+		if (moveThread.joinable()) moveThread.join();
+		saveState();
 		KillTimer(hwnd, kTimer);
 		player.uninit();
 		PostQuitMessage(0);
@@ -536,6 +600,7 @@ void App::click(Hit id, int index)
 		break;
 	}
 	case Hit::AlbumRow: { int al = findAlbum(); if (al >= 0) playList(albums[al].tracks, index); break; }
+	case Hit::NowAlbumRow: if (nowAlbum >= 0 && nowAlbum < (int)albums.size()) playList(albums[nowAlbum].tracks, index); break;
 	case Hit::AlbumCover:
 	{
 		int al = findAlbum();
@@ -628,9 +693,12 @@ void App::click(Hit id, int index)
 			else
 			{
 				pendingRemove = paths;
+				bool anyImported = false;
+				for (const auto& p : paths) if (isImported(p)) anyImported = true;
 				wchar_t t[96];
-				if (paths.size() == 1) swprintf(t, 96, L"Move this song to the Recycle Bin?");
-				else swprintf(t, 96, L"Move %zu songs to the Recycle Bin?", paths.size());
+				if (!anyImported) swprintf(t, 96, paths.size() == 1 ? L"Hide this song from LossCat?" : L"Hide %zu songs from LossCat?", paths.size());
+				else if (paths.size() == 1) swprintf(t, 96, L"Move this song to the Recycle Bin?");
+				else swprintf(t, 96, L"Remove %zu songs from your library?", paths.size());
 				confirmTitle = t;
 				confirmOpen = true;
 			}
@@ -638,7 +706,14 @@ void App::click(Hit id, int index)
 		break;
 	case Hit::ConfirmOk:
 		confirmOpen = false;
-		if (pendingDeletePlaylist > 0)
+		confirmBody.clear();
+		if (!pendingLibraryDir.empty()) startLibraryMove();
+		else if (pendingRemoveLyrics)
+		{
+			pendingRemoveLyrics = false;
+			saveLyrics(L"");
+		}
+		else if (pendingDeletePlaylist > 0)
 		{
 			if (pls.remove(pendingDeletePlaylist))
 			{
@@ -653,6 +728,9 @@ void App::click(Hit id, int index)
 		break;
 	case Hit::ConfirmCancel:
 		confirmOpen = false;
+		confirmBody.clear();
+		pendingLibraryDir.clear();
+		pendingRemoveLyrics = false;
 		pendingRemove.clear();
 		pendingDeletePlaylist = -1;
 		break;
@@ -708,9 +786,21 @@ void App::click(Hit id, int index)
 		if (index >= 0 && index < (int)rowHeartPaths.size()) toggleFavourite(rowHeartPaths[index]);
 		break;
 	case Hit::LibTabPlaylists: libTab = 3; pageScroll = 0; break;
-	case Hit::PlaylistTile: openPlaylist = index; page = Page::Playlist; break;
+	case Hit::PlaylistTile:
+		if (tileToPlaylist(index) == -2) { page = Page::Smart; listScroll = 0; }
+		else { openPlaylist = tileToPlaylist(index); page = Page::Playlist; }
+		break;
+	case Hit::SmartNav: page = Page::Smart; listScroll = 0; break;
+	case Hit::SmartRow: { std::vector<int> idx = smartTracks(); if (index >= 0 && index < (int)idx.size()) playList(idx, index); break; }
+	case Hit::GoToAlbum:
+		if (current >= 0)
+			for (int k = 0; k < (int)albums.size(); ++k)
+				for (int t : albums[k].tracks)
+					if (libTracks[t].path == queue[current].path) { albumFromArtist = false; openAlbum(k); k = (int)albums.size(); break; }
+		break;
+	case Hit::NowMore: openMenu(Hit::NowMore, -1, nowMoreAt.x, nowMoreAt.bottom() + 4); break;
 	case Hit::ImportFiles: { auto f = pickFiles(); if (!f.empty()) importFiles(f); break; }
-	case Hit::Rescan: loadLibrary(); notice.clear(); break;
+	case Hit::Rescan: notice.clear(); loadLibrary(true); break;
 	case Hit::AddToLibrary: if (current >= 0 && !inLibrary(queue[current].path)) importFiles({ queue[current].path }); break;
 	case Hit::Settings: case Hit::SignalPath: page = Page::Settings; pageScroll = 0; break;
 	case Hit::WinMin: ShowWindow(hwnd, SW_MINIMIZE); break;
@@ -718,6 +808,14 @@ void App::click(Hit id, int index)
 	case Hit::TabNext: npTab = 0; break;
 	case Hit::TabAbout: npTab = 1; break;
 	case Hit::TabLyrics: npTab = 2; break;
+	case Hit::LyricCopy: copyLyrics(); break;
+	case Hit::LyricPaste: pasteLyrics(); break;
+	case Hit::LyricFile: loadLyricsFile(); break;
+	case Hit::LyricRemove:
+		pendingRemoveLyrics = true;
+		confirmTitle = L"Remove the lyrics from this song?";
+		confirmOpen = true;
+		break;
 	case Hit::Cover: if (current >= 0) page = Page::Now; break;
 	case Hit::Shuffle: shuffle = !shuffle; rebuildOrder(); break;
 	case Hit::PlayAll:
@@ -746,26 +844,289 @@ void App::click(Hit id, int index)
 	case Hit::OpenLibraryFolder:
 		if (!libraryDir.empty()) ShellExecuteW(hwnd, L"open", libraryDir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 		break;
+	case Hit::OpenMusicFolder:
+		if (index >= 0 && index < (int)musicFolders.size()) ShellExecuteW(hwnd, L"open", musicFolders[index].c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+		break;
+	case Hit::AddMusicFolder: addMusicFolder(); break;
+	case Hit::ChangeLibraryFolder: changeLibraryFolder(); break;
+	case Hit::RemoveMusicFolder:
+		if (index >= 0 && index < (int)musicFolders.size() && !busyImporting())
+		{
+			musicFolders.erase(musicFolders.begin() + index);
+			saveState();
+			loadLibrary(true);
+		}
+		break;
+	case Hit::ShowHidden:
+		if (!busyImporting())
+		{
+			hiddenFiles.clear();
+			saveState();
+			loadLibrary(true);
+		}
+		break;
 	default: break;
 	}
 	updateTimer();
 	InvalidateRect(hwnd, nullptr, FALSE);
 }
 
-void App::loadLibrary()
+void App::loadLibrary(bool background)
 {
 	if (busyImporting()) return;
 	PWSTR music = nullptr;
-	if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Music, 0, nullptr, &music)))
-	{
+	if (!customLibraryDir.empty()) libraryDir = customLibraryDir;
+	else if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Music, 0, nullptr, &music)))
 		libraryDir = std::wstring(music) + L"\\LossCat";
-		CoTaskMemFree(music);
-	}
+	CoTaskMemFree(music);
 	if (libraryDir.empty()) return;
 
-	if (!lib.open(narrow(libraryDir))) return;
+	std::vector<std::string> folders, hidden;
+	for (const auto& f : musicFolders) folders.push_back(narrow(f));
+	for (const auto& h : hiddenFiles) hidden.push_back(narrow(h));
+	std::string root = narrow(libraryDir), cache = narrow(cachePath());
+
+	if (!background)
+	{
+		// at startup: with the tag cache this is quick even for big folders
+		if (!lib.open(root, folders, hidden, cache)) return;
+		pls.load(root);
+		refreshLibrary();
+		return;
+	}
+	scanning = true;
+	scanCount = 0;
+	notice.clear();
+	scanThread = std::thread([this, root, folders, hidden, cache]() {
+		scanned = Library();
+		scanned.open(root, folders, hidden, cache, [this](int n) { scanCount = n; PostMessageW(hwnd, WM_NULL, 0, 0); });
+		PostMessageW(hwnd, WM_SCAN_DONE, 0, 0);
+	});
+	SetTimer(hwnd, 3, 100, nullptr);   // redraw the progress
+	InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+void App::finishScan()
+{
+	if (scanThread.joinable()) scanThread.join();
+	KillTimer(hwnd, 3);
+	lib = std::move(scanned);
+	scanned = Library();
+	scanning = false;
 	pls.load(narrow(libraryDir));
+	covers.clear();
 	refreshLibrary();
+	notice = libTracks.size() == 1 ? L"1 song in your library" : std::to_wstring(libTracks.size()) + L" songs in your library";
+	InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+void App::changeLibraryFolder()
+{
+	if (busyImporting()) return;
+	std::wstring picked = pickFolder(L"Choose a new LossCat folder");
+	if (picked.empty()) return;
+	auto under = [](const std::wstring& path, const std::wstring& dir) {
+		return path.size() >= dir.size() && _wcsnicmp(path.c_str(), dir.c_str(), dir.size()) == 0
+			&& (path.size() == dir.size() || path[dir.size()] == L'\\' || dir.back() == L'\\');
+	};
+	if (under(picked, libraryDir))
+	{
+		notice = _wcsicmp(picked.c_str(), libraryDir.c_str()) == 0 ? L"That's already the LossCat folder" : L"The new folder can't be inside the current one";
+		InvalidateRect(hwnd, nullptr, FALSE);
+		return;
+	}
+	pendingLibraryDir = picked;
+	int songs = 0;
+	for (const Track& t : libTracks) if (isImported(t.path)) ++songs;
+	confirmTitle = L"Move the LossCat folder?";
+	confirmBody = L"Your imported songs (" + std::to_wstring(songs) + L") and playlists move to " + picked + L". Nothing else changes.";
+	confirmOpen = true;
+	InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+// Moves everything in the LossCat folder to pendingLibraryDir on a worker thread.
+// A rename on the same drive is instant; across drives each file is copied, then deleted.
+void App::startLibraryMove()
+{
+	std::wstring from = libraryDir, to = pendingLibraryDir;
+	pendingLibraryDir.clear();
+	if (from.empty() || to.empty() || busyImporting()) return;
+
+	// the decoder may hold a file from the folder open
+	moveResumePath.clear();
+	if (current >= 0 && isImported(queue[current].path))
+	{
+		moveResumePath = queue[current].path;
+		moveResume = player.getState() == State::Playing;
+		moveResumeAt = player.position();
+		player.uninit();
+		audioOk = player.init(0, 0);
+		if (audioOk) player.setVolume(volume);
+	}
+	moveFrom = from;
+	moving = true;
+	moveDone = 0;
+	moveFailed = 0;
+	moveTotal = 0;
+	moveTo = to;   // becomes the LossCat folder once the move is done
+	moveThread = std::thread([this, from, to]() {
+		namespace fs = std::filesystem;
+		std::error_code ec;
+		fs::path src(from), dst(to);
+		std::vector<fs::path> files;
+		for (fs::recursive_directory_iterator it(src, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec))
+			if (it->is_regular_file(ec)) files.push_back(it->path());
+		moveTotal = (int)files.size();
+		for (const fs::path& f : files)
+		{
+			fs::path target = dst / f.lexically_relative(src);
+			fs::create_directories(target.parent_path(), ec);
+			ec.clear();
+			if (fs::exists(target, ec))
+			{
+				if (fs::file_size(target, ec) == fs::file_size(f, ec)) { fs::remove(f, ec); ++moveDone; continue; }   // already there
+				fs::path base = target;
+				for (int n = 2; fs::exists(target, ec); ++n)
+				{
+					target = base.parent_path() / base.stem();
+					target += L" (" + std::to_wstring(n) + L")";
+					target += base.extension();
+				}
+			}
+			fs::rename(f, target, ec);
+			if (ec)
+			{
+				ec.clear();
+				fs::copy_file(f, target, ec);
+				if (!ec) fs::remove(f, ec);
+			}
+			if (ec) ++moveFailed;
+			++moveDone;
+		}
+		// clear out the folders left empty, deepest first
+		std::vector<fs::path> dirs;
+		for (fs::recursive_directory_iterator it(src, ec), end; !ec && it != end; it.increment(ec))
+			if (it->is_directory(ec)) dirs.push_back(it->path());
+		std::sort(dirs.begin(), dirs.end(), [](const fs::path& a, const fs::path& b) { return a.native().size() > b.native().size(); });
+		for (const fs::path& d : dirs) fs::remove(d, ec);
+		fs::remove(src, ec);
+		PostMessageW(hwnd, WM_MOVE_DONE, 0, 0);
+	});
+	SetTimer(hwnd, 3, 100, nullptr);
+	InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+void App::finishLibraryMove()
+{
+	if (moveThread.joinable()) moveThread.join();
+	KillTimer(hwnd, 3);
+	moving = false;
+	std::wstring from = moveFrom, to = moveTo;
+	customLibraryDir = to;
+	auto remap = [&](std::wstring& p) {
+		if (p.size() > from.size() && _wcsnicmp(p.c_str(), from.c_str(), from.size()) == 0 && (p[from.size()] == L'\\' || p[from.size()] == L'/'))
+			p = to + p.substr(from.size());
+	};
+	for (Track& t : queue) remap(t.path);
+	for (std::wstring& p : recentPlayed) remap(p);
+	remap(moveResumePath);
+	{
+		std::map<std::wstring, std::wstring> moved;
+		for (auto& [k, v] : lyricsByPath) { std::wstring nk = k; remap(nk); moved[nk] = v; }
+		lyricsByPath = std::move(moved);
+	}
+	covers.clear();
+	coverFor = -1;
+
+	// The tag cache is keyed by path; point its entries at the new folder so nothing is read again.
+	std::wstring cache = cachePath();
+	FILE* f = nullptr;
+	if (!cache.empty() && _wfopen_s(&f, cache.c_str(), L"rb") == 0 && f)
+	{
+		std::string data;
+		char chunk[8192];
+		size_t n;
+		while ((n = fread(chunk, 1, sizeof chunk, f)) > 0) data.append(chunk, n);
+		fclose(f);
+		auto esc = [](const std::string& s) { std::string o; for (char c : s) { if (c == '\\') o += "\\\\"; else o += c; } return o; };
+		std::string a = esc(narrow(from)), b = esc(narrow(to));
+		std::string out;
+		size_t start = 0;
+		while (start < data.size())
+		{
+			size_t end = data.find('\n', start);
+			if (end == std::string::npos) end = data.size();
+			std::string line = data.substr(start, end - start);
+			if (line.size() > a.size() && _strnicmp(line.c_str(), a.c_str(), a.size()) == 0) line = b + line.substr(a.size());
+			out += line + "\n";
+			start = end + 1;
+		}
+		if (_wfopen_s(&f, cache.c_str(), L"wb") == 0 && f) { fwrite(out.data(), 1, out.size(), f); fclose(f); }
+	}
+
+	// a music folder that is now the LossCat folder would list everything twice
+	musicFolders.erase(std::remove_if(musicFolders.begin(), musicFolders.end(), [&](const std::wstring& m) { return _wcsicmp(m.c_str(), to.c_str()) == 0; }), musicFolders.end());
+	saveState();
+	loadLibrary();
+
+	if (!moveResumePath.empty() && current >= 0 && queue[current].path == moveResumePath && audioOk && player.load(fsPath(moveResumePath)))
+	{
+		player.seek(moveResumeAt);
+		if (moveResume) player.play();
+	}
+	notice = moveFailed ? L"Moved, but " + std::to_wstring(moveFailed) + L" files couldn't be moved. They're still in " + from
+		: L"The LossCat folder is now " + to;
+	updateTimer();
+	InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+std::wstring App::cachePath() const
+{
+	std::wstring s = statePath();
+	return s.empty() ? L"" : s.substr(0, s.find_last_of(L'\\')) + L"\\library-cache.txt";
+}
+
+std::wstring App::pickFolder(const wchar_t* title)
+{
+	std::wstring picked;
+	IFileOpenDialog* dlg = nullptr;
+	if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg))))
+	{
+		DWORD opts = 0;
+		dlg->GetOptions(&opts);
+		dlg->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+		dlg->SetTitle(title);
+		IShellItem* item = nullptr;
+		if (SUCCEEDED(dlg->Show(hwnd)) && SUCCEEDED(dlg->GetResult(&item)))
+		{
+			PWSTR p = nullptr;
+			if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &p))) { picked = p; CoTaskMemFree(p); }
+			item->Release();
+		}
+		dlg->Release();
+	}
+	while (picked.size() > 3 && (picked.back() == L'\\' || picked.back() == L'/')) picked.pop_back();
+	return picked;
+}
+
+void App::addMusicFolder()
+{
+	if (busyImporting()) return;
+	std::wstring picked = pickFolder(L"Add a music folder");
+	if (picked.empty()) return;
+
+	auto under = [](const std::wstring& path, const std::wstring& dir) {
+		return path.size() >= dir.size() && _wcsnicmp(path.c_str(), dir.c_str(), dir.size()) == 0
+			&& (path.size() == dir.size() || path[dir.size()] == L'\\' || dir.back() == L'\\');
+	};
+	if (under(picked, libraryDir)) { notice = L"That folder is already part of your library"; InvalidateRect(hwnd, nullptr, FALSE); return; }
+	for (const auto& f : musicFolders)
+		if (under(picked, f)) { notice = L"That folder is already in your list"; InvalidateRect(hwnd, nullptr, FALSE); return; }
+	// a new folder that contains ones already listed replaces them
+	musicFolders.erase(std::remove_if(musicFolders.begin(), musicFolders.end(), [&](const std::wstring& f) { return under(f, picked); }), musicFolders.end());
+	musicFolders.push_back(picked);
+	saveState();
+	loadLibrary(true);
 }
 
 void App::refreshLibrary()
@@ -865,11 +1226,23 @@ void App::playList(const std::vector<int>& idx, int start)
 	playIndex(start);
 }
 
-bool App::inLibrary(const std::wstring& path) const
+bool App::isImported(const std::wstring& path) const
 {
 	if (libraryDir.empty() || path.size() <= libraryDir.size()) return false;
 	return _wcsnicmp(path.c_str(), libraryDir.c_str(), libraryDir.size()) == 0
 		&& (path[libraryDir.size()] == L'\\' || path[libraryDir.size()] == L'/');
+}
+
+// In LossCat's own folder or one of the music folders, and not hidden.
+bool App::inLibrary(const std::wstring& path) const
+{
+	if (isImported(path)) return true;
+	bool inFolder = false;
+	for (const auto& f : musicFolders)
+		if (path.size() > f.size() && _wcsnicmp(path.c_str(), f.c_str(), f.size()) == 0
+			&& (path[f.size()] == L'\\' || path[f.size()] == L'/' || f.back() == L'\\'))
+			inFolder = true;
+	return inFolder && std::find(hiddenFiles.begin(), hiddenFiles.end(), path) == hiddenFiles.end();
 }
 
 void App::openMenu(Hit target, int index, float x, float y)
@@ -880,16 +1253,23 @@ void App::openMenu(Hit target, int index, float x, float y)
 		switch (target)
 		{
 		case Hit::LibraryRow: return index < (int)libTracks.size() ? libTracks[index].path : L"";
+		case Hit::NowAlbumRow: return nowAlbum >= 0 && nowAlbum < (int)albums.size() && index < (int)albums[nowAlbum].tracks.size() ? libTracks[albums[nowAlbum].tracks[index]].path : L"";
 		case Hit::AlbumRow: { int al = findAlbum(); return al >= 0 && index < (int)albums[al].tracks.size() ? libTracks[albums[al].tracks[index]].path : L""; }
 		case Hit::AddedTile: return index < (int)recentlyAdded.size() ? libTracks[recentlyAdded[index]].path : L"";
 		case Hit::RecentTile: return index < (int)recentPlayed.size() ? recentPlayed[index] : L"";
 		case Hit::QueueRow: return index < (int)queue.size() ? queue[index].path : L"";
 		case Hit::PlaylistRow: { const auto& l = playlistTracks(openPlaylist); return index < (int)l.size() ? l[index].path : L""; }
-		case Hit::Cover: case Hit::AddToLibrary: return current >= 0 ? queue[current].path : L"";
+		case Hit::Cover: case Hit::AddToLibrary: case Hit::NowMore: return current >= 0 ? queue[current].path : L"";
+		case Hit::SmartRow: { std::vector<int> idx = smartTracks(); return index >= 0 && index < (int)idx.size() ? libTracks[idx[index]].path : L""; }
 		default: return L"";
 		}
 	};
-	if (target == Hit::PlaylistTile) target = Hit::PlaylistNav;
+	if (target == Hit::PlaylistTile)
+	{
+		index = tileToPlaylist(index);
+		if (index == -2) return;
+		target = Hit::PlaylistNav;
+	}
 	if (target == Hit::ArtistAlbum) { target = Hit::AlbumTile; index = index >= 0 && index < (int)artistAlbums.size() ? artistAlbums[index] : -1; }
 	if (target == Hit::TilePlay) return;
 	if (target == Hit::PlaylistNav)
@@ -926,16 +1306,17 @@ void App::openMenu(Hit target, int index, float x, float y)
 		std::wstring p = songPath();
 		if (p.empty()) { if (menuOpen) { menuOpen = false; InvalidateRect(hwnd, nullptr, FALSE); } return; }
 		menuPaths.push_back(p);
-		menu.push_back({ L"Play", Act::Play, false });
+		bool fromNow = target == Hit::NowMore;   // Now playing already has Play, Favourite and Add to library buttons
+		if (!fromNow) menu.push_back({ L"Play", Act::Play, false });
 		if (inLibrary(p))
 		{
 			bool fav = inPlaylist(0, p);
-			menu.push_back({ fav ? L"Remove from Favourites" : L"Add to Favourites", fav ? Act::Unfavourite : Act::Favourite, false });
+			if (!fromNow) menu.push_back({ fav ? L"Remove from Favourites" : L"Add to Favourites", fav ? Act::Unfavourite : Act::Favourite, false });
 			menu.push_back({ L"Add to playlist\x2026", Act::PlaylistMenu, false });
 			menu.push_back({ L"Set album cover\x2026", Act::SetCover, false });
 			if (target == Hit::PlaylistRow && menuPlaylist >= 0)
 				menu.push_back({ L"Remove from this playlist", Act::RemoveFromPlaylist, false });
-			menu.push_back({ L"Remove from library", Act::Remove, true });
+			menu.push_back({ isImported(p) ? L"Remove from library" : L"Hide from library", Act::Remove, true });
 		}
 		else menu.push_back({ L"Add to library", Act::AddToLibrary, false });
 	}
@@ -945,14 +1326,17 @@ void App::openMenu(Hit target, int index, float x, float y)
 	InvalidateRect(hwnd, nullptr, FALSE);
 }
 
+// Playlists keep songs in LossCat's folder relative to it, and songs from music folders by full path.
 std::wstring App::absOf(const std::string& rel) const
 {
-	return libraryDir + L"\\" + widen(rel);
+	bool full = (rel.size() > 2 && rel[1] == ':') || rel.rfind("\\\\", 0) == 0;
+	return full ? widen(rel) : libraryDir + L"\\" + widen(rel);
 }
 
 std::string App::relOf(const std::wstring& abs) const
 {
 	if (!inLibrary(abs)) return {};
+	if (!isImported(abs)) return narrow(abs);
 	return narrow(abs.substr(libraryDir.size() + 1));
 }
 
@@ -1135,39 +1519,50 @@ void App::removeFromLibrary(const std::vector<std::wstring>& paths)
 		}
 	}
 
+	// Copies in LossCat's folder go to the Recycle Bin; songs from music folders are only hidden.
 	std::wstring list;
-	for (const auto& p : paths) { list += p; list.push_back(L'\0'); }
+	int recycling = 0;
+	for (const auto& p : paths) if (isImported(p)) { list += p; list.push_back(L'\0'); ++recycling; }
 	list.push_back(L'\0');
-	SHFILEOPSTRUCTW op = {};
-	op.hwnd = hwnd;
-	op.wFunc = FO_DELETE;
-	op.pFrom = list.c_str();
-	op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
-	SHFileOperationW(&op);
+	if (recycling)
+	{
+		SHFILEOPSTRUCTW op = {};
+		op.hwnd = hwnd;
+		op.wFunc = FO_DELETE;
+		op.pFrom = list.c_str();
+		op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
+		SHFileOperationW(&op);
+	}
 
-	int removed = 0;
+	int removed = 0, hid = 0;
+	std::vector<std::wstring> gone;   // no longer in the library: deleted, or hidden
 	for (const auto& p : paths)
 	{
-		if (GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES) continue;
+		bool imported = isImported(p);
+		if (imported && GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES) continue;
 		std::string u = narrow(p);
 		const auto& tracks = lib.tracks();
 		for (int i = 0; i < (int)tracks.size(); ++i)
 		{
-			if (tracks[i].path == u) { lib.forget(i); ++removed; break; }
+			if (tracks[i].path != u) continue;
+			if (imported) { lib.forget(i); ++removed; }
+			else { lib.hide(i); hiddenFiles.push_back(p); ++hid; }
+			break;
 		}
+		gone.push_back(p);
 		covers.erase(p);
 	}
+	auto isGone = [&](const std::wstring& p) { return std::find(gone.begin(), gone.end(), p) != gone.end(); };
 
 	std::wstring playing = current >= 0 ? queue[current].path : L"";
 	std::vector<Track> kept;
-	for (auto& t : queue) if (!removing(t.path) || GetFileAttributesW(t.path.c_str()) != INVALID_FILE_ATTRIBUTES) kept.push_back(std::move(t));
+	for (auto& t : queue) if (!isGone(t.path)) kept.push_back(std::move(t));
 	queue = std::move(kept);
 	order.clear();
 	current = -1;
 	for (int i = 0; i < (int)queue.size(); ++i) if (queue[i].path == playing) { current = i; break; }
 	rebuildOrder();
-	recentPlayed.erase(std::remove_if(recentPlayed.begin(), recentPlayed.end(), [&](const std::wstring& p) {
-		return removing(p) && GetFileAttributesW(p.c_str()) == INVALID_FILE_ATTRIBUTES; }), recentPlayed.end());
+	recentPlayed.erase(std::remove_if(recentPlayed.begin(), recentPlayed.end(), isGone), recentPlayed.end());
 
 	const auto& all = pls.all();
 	for (int p = 0; p < (int)all.size(); ++p)
@@ -1175,16 +1570,21 @@ void App::removeFromLibrary(const std::vector<std::wstring>& paths)
 		for (int pos = (int)all[p].paths.size() - 1; pos >= 0; --pos)
 		{
 			std::wstring abs = absOf(all[p].paths[pos]);
-			if (removing(abs) && GetFileAttributesW(abs.c_str()) == INVALID_FILE_ATTRIBUTES) pls.removeAt(p, pos);
+			if (isGone(abs)) pls.removeAt(p, pos);
 		}
 	}
 	refreshLibrary();
-	wchar_t buf[96];
-	if (removed == (int)paths.size())
-		swprintf(buf, 96, removed == 1 ? L"Moved 1 song to the Recycle Bin" : L"Moved %d songs to the Recycle Bin", removed);
+	wchar_t buf[128];
+	if (hid && !recycling)
+		swprintf(buf, 128, hid == 1 ? L"Hid 1 song. The file is still in its folder" : L"Hid %d songs. The files are still in their folders", hid);
+	else if (removed == recycling && !hid)
+		swprintf(buf, 128, removed == 1 ? L"Moved 1 song to the Recycle Bin" : L"Moved %d songs to the Recycle Bin", removed);
+	else if (removed == recycling)
+		swprintf(buf, 128, L"Moved %d to the Recycle Bin, hid %d from your folders", removed, hid);
 	else
-		swprintf(buf, 96, L"Moved %d of %zu songs; the rest are in use or locked", removed, paths.size());
+		swprintf(buf, 128, L"Moved %d of %d songs; the rest are in use or locked", removed, recycling);
 	notice = buf;
+	saveState();
 	updateTimer();
 	InvalidateRect(hwnd, nullptr, FALSE);
 }
@@ -1277,23 +1677,157 @@ void App::finishCover()
 		}
 	}
 	int ok = (int)coverPaths.size() - coverFailed;
-	notice = ok == 1 ? L"Cover set on 1 song" : L"Cover set on " + std::to_wstring(ok) + L" songs";
+	notice = ok == 1 ? L"Cover saved into 1 file" : L"Cover saved into " + std::to_wstring(ok) + L" files";
 	if (coverFailed) notice += L", " + std::to_wstring(coverFailed) + L" failed: " + widen(coverError);
 	updateTimer();
 	InvalidateRect(hwnd, nullptr, FALSE);
 }
 
+std::vector<int> App::smartTracks() const
+{
+	std::vector<int> out;
+	for (int i = 0; i < (int)libTracks.size(); ++i)
+	{
+		std::wstring e = extUpper(libTracks[i].path);
+		bool lossless = e == L"FLAC" || e == L"WAV" || e == L"AIF" || e == L"AIFF" || e == L"WV" || e == L"APE";
+		if (lossless && libTracks[i].info.bitsPerSample >= 24) out.push_back(i);
+	}
+	return out;
+}
+
+const std::wstring& App::lyricsFor(const Track& t)
+{
+	auto it = lyricsByPath.find(t.path);
+	if (it == lyricsByPath.end()) it = lyricsByPath.emplace(t.path, widen(t.info.lyrics)).first;
+	return it->second;
+}
+
+int App::lyricLineAt(float y) const
+{
+	if (lyricTops.empty()) return -1;
+	float cy = y - lyricArea.y + lyricScroll;
+	int i = (int)(std::upper_bound(lyricTops.begin(), lyricTops.end(), cy) - lyricTops.begin()) - 1;
+	return i < 0 ? 0 : i;
+}
+
+void App::copyLyrics()
+{
+	if (lyricLines.empty()) return;
+	int a = 0, b = (int)lyricLines.size() - 1;
+	if (lyricSelA >= 0) { a = std::min(lyricSelA, lyricSelB); b = std::max(lyricSelA, lyricSelB); }
+	std::wstring text;
+	for (int i = a; i <= b && i < (int)lyricLines.size(); ++i) text += lyricLines[i] + (i < b ? L"\r\n" : L"");
+	if (!OpenClipboard(hwnd)) return;
+	EmptyClipboard();
+	if (HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, (text.size() + 1) * sizeof(wchar_t)))
+	{
+		memcpy(GlobalLock(mem), text.c_str(), (text.size() + 1) * sizeof(wchar_t));
+		GlobalUnlock(mem);
+		if (!SetClipboardData(CF_UNICODETEXT, mem)) GlobalFree(mem);
+	}
+	CloseClipboard();
+	notice = a == b && lyricSelA >= 0 ? L"Copied 1 line" : lyricSelA >= 0 ? L"Copied " + std::to_wstring(b - a + 1) + L" lines" : L"Copied the lyrics";
+	InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+void App::saveLyrics(const std::wstring& raw)
+{
+	if (current < 0 || busyImporting()) return;
+	std::wstring path = queue[current].path;
+	if (!inLibrary(path)) { notice = L"Add the song to your library to save lyrics"; InvalidateRect(hwnd, nullptr, FALSE); return; }
+	std::wstring text;
+	for (wchar_t c : raw) if (c != L'\r') text += c;
+	while (!text.empty() && (text.back() == L'\n' || text.back() == L' ')) text.pop_back();
+
+	// The decoder has the file open; let go of it while the tags are rewritten.
+	bool wasPlaying = player.getState() == State::Playing;
+	double at = player.position();
+	player.uninit();
+	audioOk = player.init(0, 0);
+	if (audioOk) player.setVolume(volume);
+	std::string err;
+	bool ok = writeLyrics(narrow(path), narrow(text), err);
+	if (audioOk && player.load(fsPath(path)))
+	{
+		player.seek(at);
+		if (wasPlaying) player.play();
+	}
+	if (ok)
+	{
+		lyricsByPath[path] = text;
+		lyricSelA = lyricSelB = -1;
+		lyricScroll = 0;
+		notice = text.empty() ? L"Lyrics removed from the file" : L"Lyrics saved into the song file";
+	}
+	else notice = L"Couldn't save the lyrics: " + widen(err);
+	updateTimer();
+	InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+void App::pasteLyrics()
+{
+	std::wstring text;
+	if (OpenClipboard(hwnd))
+	{
+		if (HANDLE h = GetClipboardData(CF_UNICODETEXT))
+			if (const wchar_t* p = (const wchar_t*)GlobalLock(h)) { text = p; GlobalUnlock(h); }
+		CloseClipboard();
+	}
+	bool blank = text.find_first_not_of(L" \t\r\n") == std::wstring::npos;
+	if (blank) { notice = L"Copy the lyrics first, then paste them here"; InvalidateRect(hwnd, nullptr, FALSE); return; }
+	saveLyrics(text);
+}
+
+void App::loadLyricsFile()
+{
+	std::vector<wchar_t> buf(MAX_PATH * 4, L'\0');
+	OPENFILENAMEW ofn = { sizeof(ofn) };
+	ofn.hwndOwner = hwnd;
+	ofn.lpstrFilter = L"Lyrics\0*.lrc;*.txt\0";
+	ofn.lpstrFile = buf.data();
+	ofn.nMaxFile = (DWORD)buf.size();
+	ofn.lpstrTitle = L"Choose a lyrics file";
+	ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST;
+	if (!GetOpenFileNameW(&ofn)) return;
+	std::string bytes;
+	FILE* f = nullptr;
+	if (_wfopen_s(&f, buf.data(), L"rb") == 0 && f)
+	{
+		char chunk[4096];
+		size_t n;
+		while ((n = fread(chunk, 1, sizeof chunk, f)) > 0 && bytes.size() < (1 << 20)) bytes.append(chunk, n);
+		fclose(f);
+	}
+	if (bytes.size() >= 3 && bytes.compare(0, 3, "\xEF\xBB\xBF") == 0) bytes.erase(0, 3);
+	// UTF-8 if it decodes as UTF-8, otherwise the system code page (older .lrc files)
+	UINT cp = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), (int)bytes.size(), nullptr, 0) > 0 ? CP_UTF8 : CP_ACP;
+	int n = MultiByteToWideChar(cp, 0, bytes.data(), (int)bytes.size(), nullptr, 0);
+	std::wstring text(n, L'\0');
+	MultiByteToWideChar(cp, 0, bytes.data(), (int)bytes.size(), &text[0], n);
+	if (text.find_first_not_of(L" \t\r\n") == std::wstring::npos) { notice = L"That file is empty"; InvalidateRect(hwnd, nullptr, FALSE); return; }
+	saveLyrics(text);
+}
+
 bool App::busyImporting()
 {
-	if (!importing && !coverBusy) return false;
-	notice = L"Wait for the import to finish";
+	if (!importing && !coverBusy && !scanning && !moving) return false;
+	notice = moving ? L"Wait for the LossCat folder to finish moving" : scanning ? L"Wait for the scan to finish" : L"Wait for the import to finish";
 	InvalidateRect(hwnd, nullptr, FALSE);
 	return true;
 }
 
-void App::importFiles(const std::vector<std::wstring>& files)
+void App::importFiles(const std::vector<std::wstring>& filesIn)
 {
-	if (files.empty() || busyImporting()) return;
+	if (filesIn.empty() || busyImporting()) return;
+	// songs already in a music folder are in the library as they are; no copy needed
+	std::vector<std::wstring> files;
+	for (const auto& f : filesIn) if (!inLibrary(f)) files.push_back(f);
+	if (files.empty())
+	{
+		notice = filesIn.size() == 1 ? L"That song is already in your library" : L"Those songs are already in your library";
+		InvalidateRect(hwnd, nullptr, FALSE);
+		return;
+	}
 	importResults.clear();
 	importDone = 0;
 	importTotal = (int)files.size();
@@ -1540,6 +2074,7 @@ std::vector<std::wstring> App::pickFiles()
 void App::tick()
 {
 	if (current >= 0 && player.isFinished()) next(false);
+	if (nowMs() - lastSaveMs > 30000) saveState();   // so a crash or power cut loses little
 	InvalidateRect(hwnd, nullptr, FALSE);
 	updateTimer();
 }
@@ -1553,4 +2088,161 @@ void App::updateTimer()
 	if (want) SetTimer(hwnd, kTimer, want, nullptr);
 	else KillTimer(hwnd, kTimer);
 	timerMs = want;
+}
+
+// ---------------------------------------------------------------- saved state
+
+std::wstring App::statePath() const
+{
+	PWSTR dir = nullptr;
+	std::wstring path;
+	if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &dir)))
+		path = std::wstring(dir) + L"\\LossCat\\state.txt";
+	CoTaskMemFree(dir);
+	return path;
+}
+
+void App::saveState()
+{
+	lastSaveMs = nowMs();
+	std::wstring path = statePath();
+	if (path.empty()) return;
+	CreateDirectoryW(path.substr(0, path.find_last_of(L'\\')).c_str(), nullptr);
+
+	std::string s = "LossCat state 1\n";
+	char num[64];
+	snprintf(num, sizeof num, "%.3f", volume);
+	s += "volume=" + std::string(num) + "\n";
+	s += "shuffle=" + std::to_string(shuffle ? 1 : 0) + "\n";
+	s += "repeat=" + std::to_string(repeat) + "\n";
+	s += "sidebar=" + std::string(collapsed ? "collapsed" : "open") + "\n";
+	s += "queuePanel=" + std::string(queueOpen ? "open" : "closed") + "\n";
+	if (current >= 0)
+	{
+		s += "current=" + std::to_string(current) + "\n";
+		snprintf(num, sizeof num, "%.2f", player.getState() == State::NoTrack ? 0.0 : player.position());
+		s += "position=" + std::string(num) + "\n";
+	}
+	if (shuffle && order.size() == queue.size())
+	{
+		s += "order=";
+		for (size_t i = 0; i < order.size(); ++i) s += (i ? "," : "") + std::to_string(order[i]);
+		s += "\n";
+	}
+	for (const Track& t : queue) s += "track=" + narrow(t.path) + "\n";
+	for (const std::wstring& p : recentPlayed) s += "recent=" + narrow(p) + "\n";
+	for (const std::wstring& f : musicFolders) s += "folder=" + narrow(f) + "\n";
+	if (!customLibraryDir.empty()) s += "libraryFolder=" + narrow(customLibraryDir) + "\n";
+	for (const std::wstring& h : hiddenFiles) s += "hidden=" + narrow(h) + "\n";
+
+	// Write a temporary file and swap it in, so a crash mid-write can't leave a broken state.
+	std::wstring tmp = path + L".tmp";
+	FILE* f = nullptr;
+	if (_wfopen_s(&f, tmp.c_str(), L"wb") != 0 || !f) return;
+	bool ok = fwrite(s.data(), 1, s.size(), f) == s.size();
+	ok = fclose(f) == 0 && ok;
+	if (ok) MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+	else DeleteFileW(tmp.c_str());
+}
+
+void App::loadState()
+{
+	lastSaveMs = nowMs();
+	std::wstring path = statePath();
+	FILE* f = nullptr;
+	std::string data;
+	if (!path.empty() && _wfopen_s(&f, path.c_str(), L"rb") == 0 && f)
+	{
+		char chunk[8192];
+		size_t n;
+		while ((n = fread(chunk, 1, sizeof chunk, f)) > 0) data.append(chunk, n);
+		fclose(f);
+	}
+
+	int savedCurrent = -1;
+	double position = 0;
+	std::vector<int> savedOrder;
+	std::vector<std::wstring> tracks;
+	recentPlayed.clear();
+	size_t start = 0;
+	while (start < data.size())
+	{
+		size_t end = data.find('\n', start);
+		if (end == std::string::npos) end = data.size();
+		std::string line = data.substr(start, end - start);
+		start = end + 1;
+		if (!line.empty() && line.back() == '\r') line.pop_back();
+		size_t eq = line.find('=');
+		if (eq == std::string::npos) continue;   // header, or a line from a newer version
+		std::string key = line.substr(0, eq), val = line.substr(eq + 1);
+		if (key == "volume") { volume = (float)atof(val.c_str()); if (volume < 0) volume = 0; if (volume > 1) volume = 1; }
+		else if (key == "shuffle") shuffle = val == "1";
+		else if (key == "repeat") { repeat = atoi(val.c_str()); if (repeat < 0 || repeat > 2) repeat = 0; }
+		else if (key == "sidebar") collapsed = val == "collapsed";
+		else if (key == "queuePanel") queueOpen = val == "open";
+		else if (key == "current") savedCurrent = atoi(val.c_str());
+		else if (key == "position") position = atof(val.c_str());
+		else if (key == "order")
+		{
+			for (size_t p = 0; p < val.size();)
+			{
+				savedOrder.push_back(atoi(val.c_str() + p));
+				size_t c = val.find(',', p);
+				if (c == std::string::npos) break;
+				p = c + 1;
+			}
+		}
+		else if (key == "track" && tracks.size() < 5000) tracks.push_back(widen(val));
+		else if (key == "folder") musicFolders.push_back(widen(val));
+		else if (key == "libraryFolder") customLibraryDir = widen(val);
+		else if (key == "hidden") hiddenFiles.push_back(widen(val));
+		else if (key == "recent" && recentPlayed.size() < 12)
+		{
+			std::wstring p = widen(val);
+			if (GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES) recentPlayed.push_back(p);
+		}
+	}
+	if (audioOk) player.setVolume(volume);
+	loadLibrary();   // needs the music folders read above
+	if (data.empty()) return;
+
+	// Rebuild the queue, skipping files that have gone. Library songs reuse the tags already read.
+	std::map<std::wstring, int> libIndex;
+	for (int i = 0; i < (int)libTracks.size(); ++i) libIndex[libTracks[i].path] = i;
+	std::vector<int> newIndex(tracks.size(), -1);
+	queue.clear();
+	for (size_t i = 0; i < tracks.size(); ++i)
+	{
+		const std::wstring& p = tracks[i];
+		auto lib = libIndex.find(p);
+		if (lib != libIndex.end()) queue.push_back(libTracks[lib->second]);
+		else if (GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES) queue.push_back(makeTrack(p, readTrackInfo(fsPath(p)), false));
+		else continue;
+		newIndex[i] = (int)queue.size() - 1;
+	}
+	current = savedCurrent >= 0 && savedCurrent < (int)newIndex.size() ? newIndex[savedCurrent] : -1;
+	if (current < 0 && !queue.empty()) { current = 0; position = 0; }
+
+	order.clear();
+	if (shuffle && savedOrder.size() == tracks.size())
+	{
+		for (int o : savedOrder)
+			if (o >= 0 && o < (int)newIndex.size() && newIndex[o] >= 0) order.push_back(newIndex[o]);
+		if (order.size() != queue.size()) order.clear();
+	}
+	if (order.empty()) rebuildOrder();
+	orderPos = (int)(std::find(order.begin(), order.end(), current) - order.begin());
+	if (orderPos >= (int)order.size()) orderPos = -1;
+
+	// Back where it was, paused.
+	if (current >= 0)
+	{
+		Track& t = queue[current];
+		t.coverBytes = std::move(readTrackInfo(fsPath(t.path)).coverData);
+		t.coverLoaded = true;
+		if (position > t.info.durationMs / 1000.0 - 2) position = 0;   // it had finished; start it over
+		if (audioOk && canPlay(t.path) && player.load(fsPath(t.path)) && position > 0) player.seek(position);
+		std::wstring title = t.title + L" - LossCat";
+		SetWindowTextW(hwnd, title.c_str());
+	}
 }
