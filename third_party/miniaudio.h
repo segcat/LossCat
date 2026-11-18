@@ -23771,10 +23771,39 @@ static ma_result ma_device_init_internal__wasapi(ma_context* pContext, ma_device
     result = MA_FORMAT_NOT_SUPPORTED;
     if (pData->shareMode == ma_share_mode_exclusive) {
     #if defined(MA_WIN32_DESKTOP) || defined(MA_WIN32_GDK)
-        /* In exclusive mode on desktop we always use the backend's native format. */
+        /*
+        LossCat patch: first try exactly the format, channels and rate that were asked for, so a
+        file can be played at its own rate. Only if the device refuses that, use its native format.
+        */
+        ma_bool32 requestedOk = MA_FALSE;
         ma_IPropertyStore* pStore = NULL;
-        hr = ma_IMMDevice_OpenPropertyStore(pDeviceInterface, STGM_READ, &pStore);
-        if (SUCCEEDED(hr)) {
+        if (pData->formatIn != ma_format_unknown && pData->channelsIn != 0 && pData->sampleRateIn != 0 && pData->channelsIn <= MA_MAX_CHANNELS) {
+            ma_channel requestedChannelMap[MA_MAX_CHANNELS];
+            ma_channel_map_init_standard(ma_standard_channel_map_microsoft, requestedChannelMap, ma_countof(requestedChannelMap), pData->channelsIn);
+
+            MA_ZERO_OBJECT(&wf);
+            wf.cbSize          = sizeof(wf);
+            wf.wFormatTag      = WAVE_FORMAT_EXTENSIBLE;
+            wf.nChannels       = (WORD)pData->channelsIn;
+            wf.nSamplesPerSec  = pData->sampleRateIn;
+            wf.wBitsPerSample  = (WORD)(ma_get_bytes_per_sample(pData->formatIn)*8);
+            wf.nBlockAlign     = (WORD)(wf.nChannels * wf.wBitsPerSample / 8);
+            wf.nAvgBytesPerSec = wf.nBlockAlign * wf.nSamplesPerSec;
+            wf.Samples.wValidBitsPerSample = wf.wBitsPerSample;
+            wf.dwChannelMask   = ma_channel_map_to_channel_mask__win32(requestedChannelMap, pData->channelsIn);
+            wf.SubFormat       = (pData->formatIn == ma_format_f32) ? MA_GUID_KSDATAFORMAT_SUBTYPE_IEEE_FLOAT : MA_GUID_KSDATAFORMAT_SUBTYPE_PCM;
+
+            hr = ma_IAudioClient_IsFormatSupported((ma_IAudioClient*)pData->pAudioClient, MA_AUDCLNT_SHAREMODE_EXCLUSIVE, (MA_WAVEFORMATEX*)&wf, NULL);
+            if (hr == S_OK) {
+                requestedOk = MA_TRUE;
+            } else {
+                MA_ZERO_OBJECT(&wf);
+            }
+        }
+
+        /* In exclusive mode on desktop we otherwise use the backend's native format. */
+        hr = requestedOk ? S_OK : ma_IMMDevice_OpenPropertyStore(pDeviceInterface, STGM_READ, &pStore);
+        if (!requestedOk && SUCCEEDED(hr)) {
             MA_PROPVARIANT prop;
             ma_PropVariantInit(&prop);
             hr = ma_IPropertyStore_GetValue(pStore, &MA_PKEY_AudioEngine_DeviceFormat, &prop);

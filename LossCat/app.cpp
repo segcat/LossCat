@@ -125,6 +125,7 @@ bool App::create(HINSTANCE inst, int show)
 	if (!g.init(hwnd)) return false;
 	DragAcceptFiles(hwnd, TRUE);
 
+	player.setWindow(hwnd);        // ASIO drivers want the main window
 	audioOk = player.init(0, 0);   // device's native channels and rate
 	if (audioOk) player.setVolume(volume);
 	else error = L"No audio output device";
@@ -346,7 +347,7 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 		if (editPlaylist >= 0 && pressHit != Hit::EditBox) commitRename();
 		if (menuOpen && pressHit != Hit::MenuItem)
 		{
-			menuOpen = false;
+			menuOpen = menuUp = menuLeft = false;
 			pressHit = Hit::None;
 			InvalidateRect(hwnd, nullptr, FALSE);
 			return 0;
@@ -477,7 +478,7 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 			return 0;
 		}
 		if (ctrl && wp == 'Z' && hasUndo) { undoQueue(); return 0; }
-		if (menuOpen && wp == VK_ESCAPE) { menuOpen = false; InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+		if (menuOpen && wp == VK_ESCAPE) { menuOpen = menuUp = menuLeft = false; InvalidateRect(hwnd, nullptr, FALSE); return 0; }
 		bool onLyrics = page == Page::Now && npTab == 2 && current >= 0;
 		if (onLyrics && ctrl && wp == 'C') { copyLyrics(); return 0; }
 		if (onLyrics && ctrl && wp == 'A') { lyricSelA = 0; lyricSelB = (int)lyricLines.size() - 1; InvalidateRect(hwnd, nullptr, FALSE); return 0; }
@@ -612,6 +613,7 @@ void App::click(Hit id, int index)
 	case Hit::ArtistAlbum: if (index >= 0 && index < (int)artistAlbums.size()) { albumFromArtist = true; openAlbum(artistAlbums[index]); } break;
 	case Hit::TilePlay:
 		if (page == Page::Artist && index >= 0 && index < (int)artistAlbums.size()) index = artistAlbums[index];
+		else if (page == Page::Home && index >= 0 && index < (int)recentlyAdded.size()) index = recentlyAdded[index];
 		if (index >= 0 && index < (int)albums.size()) playList(albums[index].tracks, 0);
 		break;
 	case Hit::GroupBack:
@@ -648,14 +650,20 @@ void App::click(Hit id, int index)
 			if (_wcsicmp(artists[i].name.c_str(), albums[al].artist.c_str()) == 0) { openArtist(i); break; }
 		break;
 	}
-	case Hit::AddedTile: if (index < (int)recentlyAdded.size()) playFromLibrary(recentlyAdded[index]); break;
+	case Hit::AddedTile: if (index >= 0 && index < (int)recentlyAdded.size()) { albumFromArtist = false; openAlbum(recentlyAdded[index]); } break;
 	case Hit::RecentTile:
 		if (index < (int)recentPlayed.size())
 		{
 			std::wstring p = recentPlayed[index];
 			auto it = std::find_if(queue.begin(), queue.end(), [&](const Track& t) { return t.path == p; });
 			if (it != queue.end()) playIndex((int)(it - queue.begin()));
-			else addFiles({ p }, true);
+			else
+			{
+				// not in the queue any more: put it next and play it now
+				int n = (int)queue.size();
+				enqueue({ p }, true);
+				if ((int)queue.size() > n && current != n) playIndex(n);
+			}
 		}
 		break;
 	case Hit::MenuItem:
@@ -664,7 +672,7 @@ void App::click(Hit id, int index)
 			Act act = menu[index].act;
 			int arg = menu[index].arg;
 			std::vector<std::wstring> paths = menuPaths;
-			menuOpen = false;
+			menuOpen = menuUp = menuLeft = false;
 			if (act == Act::PlaylistMenu)
 			{
 				fillChooser();
@@ -698,6 +706,12 @@ void App::click(Hit id, int index)
 				++plVersion;
 				break;
 			}
+			if (act == Act::PickSort)
+			{
+				// from the menu: pick the column with its natural direction
+				if (arg >= 0 && arg != songSort) setSort(arg);
+				break;
+			}
 			if (act == Act::PlayNow) { playIndex(arg); break; }
 			if (act == Act::MoveNext) { moveQueued(arg, 0); break; }
 			if (act == Act::MoveEnd) { moveQueued(arg, (int)upcoming().size()); break; }
@@ -705,6 +719,8 @@ void App::click(Hit id, int index)
 			if (act == Act::ClearUpNext) { click(Hit::QueueClear, -1); break; }
 			if (act == Act::PlayNext || act == Act::AddToQueue) { enqueue(paths, act == Act::PlayNext); break; }
 			if (act == Act::PlayPlaylist) { playPlaylist(arg, 0, false); break; }
+			if (act == Act::PickMode) { if (arg >= 0 && arg <= 2 && arg != audioMode) setAudioMode(arg); break; }
+			if (act == Act::PickDevice) { pickDevice(arg >= 0 && arg < (int)deviceNames.size() ? widen(deviceNames[arg]) : L""); break; }
 			if (act == Act::RenamePlaylist) { startRename(arg); break; }
 			if (act == Act::DeletePlaylist)
 			{
@@ -847,6 +863,7 @@ void App::click(Hit id, int index)
 	case Hit::LyricCopy: copyLyrics(); break;
 	case Hit::LyricPaste: pasteLyrics(); break;
 	case Hit::LyricFile: loadLyricsFile(); break;
+	case Hit::LyricExport: exportLyrics(); break;
 	case Hit::LyricRemove:
 		pendingRemoveLyrics = true;
 		confirmTitle = L"Remove the lyrics from this song?";
@@ -859,7 +876,7 @@ void App::click(Hit id, int index)
 		if (!libTracks.empty())
 		{
 			shuffle = id == Hit::ShuffleAll;
-			queue = libTracks;
+			queue = sortedSongs();
 			order.clear();
 			playIndex(shuffle ? (int)(rng() % queue.size()) : 0);
 		}
@@ -884,7 +901,25 @@ void App::click(Hit id, int index)
 		break;
 	}
 	case Hit::QueueUndo: undoQueue(); break;
-	case Hit::LibraryRow: playFromLibrary(index); break;
+	case Hit::LibraryRow:
+		// rows are in the sorted order; play the list as it's shown
+		if (index >= 0 && index < (int)sortedSongs().size()) { queue = sortedSongs(); order.clear(); playIndex(index); }
+		break;
+	case Hit::SortHeader: setSort(index); break;
+	case Hit::SortMenu:
+	{
+		menu.clear();
+		menuPaths.clear();
+		menu.push_back({ L"Sort by", Act::PickSort, false, -2, Look::Heading });
+		const wchar_t* names[] = { L"Default order", L"Title", L"Artist", L"Album", L"Format", L"Length", L"Date added" };
+		for (int k : { (int)SortAdded, (int)SortTitle, (int)SortArtist, (int)SortAlbum, (int)SortTime, (int)SortFormat, (int)SortDefault })
+			menu.push_back({ names[k], Act::PickSort, false, k, Look::Item, songSort == k });
+		menuX = sortButton.right();
+		menuY = sortButton.bottom() + 4;
+		menuOpen = true;
+		menuLeft = true;
+		break;
+	}
 	case Hit::OpenLibraryFolder:
 		if (!libraryDir.empty()) ShellExecuteW(hwnd, L"open", libraryDir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 		break;
@@ -892,6 +927,23 @@ void App::click(Hit id, int index)
 		if (index >= 0 && index < (int)musicFolders.size()) ShellExecuteW(hwnd, L"open", musicFolders[index].c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 		break;
 	case Hit::AddMusicFolder: addMusicFolder(); break;
+	case Hit::ModeShared: if (audioMode != 0) setAudioMode(0); break;
+	case Hit::ModeExclusive: if (audioMode != 1) setAudioMode(1); break;
+	case Hit::ModeAsio: if (audioMode != 2) setAudioMode(2); break;
+	case Hit::ModeMenu:
+	{
+		menu.clear();
+		menuPaths.clear();
+		const wchar_t* names[] = { L"Shared", L"Exclusive", L"ASIO" };
+		for (int k = 0; k < 3; ++k) menu.push_back({ names[k], Act::PickMode, false, k, Look::Item, audioMode == k });
+		menuX = modeButton.x;
+		menuY = modeButton.bottom() + 4;
+		menuOpen = true;
+		break;
+	}
+	case Hit::DeviceMenu: openDeviceMenu(deviceButton.x, deviceButton.bottom() + 4); break;
+	// The bar's button: the menu opens upward and ends at the button's right edge.
+	case Hit::BarDevice: openDeviceMenu(barDeviceButton.right(), barDeviceButton.y - 6); menuUp = menuLeft = true; break;
 	case Hit::ChangeLibraryFolder: changeLibraryFolder(); break;
 	case Hit::RemoveMusicFolder:
 		if (index >= 0 && index < (int)musicFolders.size() && !busyImporting())
@@ -1113,7 +1165,7 @@ void App::finishLibraryMove()
 	saveState();
 	loadLibrary();
 
-	if (!moveResumePath.empty() && current >= 0 && queue[current].path == moveResumePath && audioOk && player.load(fsPath(moveResumePath)))
+	if (!moveResumePath.empty() && current >= 0 && queue[current].path == moveResumePath && audioOk && player.load(fsPath(moveResumePath), current >= 0 ? queue[current].info.bitsPerSample : 0))
 	{
 		player.seek(moveResumeAt);
 		if (moveResume) player.play();
@@ -1180,6 +1232,7 @@ void App::refreshLibrary()
 	for (const LibraryTrack& t : lib.tracks())
 	{
 		libTracks.push_back(makeTrack(widen(t.path), t.info, false));
+		libTracks.back().bytes = t.bytes;
 	}
 
 	albums.clear();
@@ -1215,10 +1268,82 @@ void App::refreshLibrary()
 		if (GetFileAttributesExW(libTracks[i].path.c_str(), GetFileExInfoStandard, &fa))
 			t = ((ULONGLONG)fa.ftCreationTime.dwHighDateTime << 32) | fa.ftCreationTime.dwLowDateTime;
 		times.push_back({ t, i });
+		libTracks[i].added = t;
 	}
 	std::sort(times.begin(), times.end(), [](auto& a, auto& b) { return a.first > b.first; });
+	// Recently added is by album: each album once, at the time of its newest song.
+	std::vector<int> albumOfTrack(libTracks.size(), -1);
+	for (int k = 0; k < (int)albums.size(); ++k)
+		for (int t : albums[k].tracks) albumOfTrack[t] = k;
 	recentlyAdded.clear();
-	for (size_t i = 0; i < times.size() && i < 12; ++i) recentlyAdded.push_back(times[i].second);
+	for (const auto& [time, i] : times)
+	{
+		int k = albumOfTrack[i];
+		if (k >= 0 && std::find(recentlyAdded.begin(), recentlyAdded.end(), k) == recentlyAdded.end()) recentlyAdded.push_back(k);
+		if (recentlyAdded.size() == 12) break;
+	}
+	InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+static int naturalCompare(const std::wstring& a, const std::wstring& b)
+{
+	// "Track 2" before "Track 10", case ignored, like Explorer
+	int r = CompareStringEx(LOCALE_NAME_USER_DEFAULT, NORM_IGNORECASE | SORT_DIGITSASNUMBERS,
+		a.c_str(), (int)a.size(), b.c_str(), (int)b.size(), nullptr, nullptr, 0);
+	return r == CSTR_LESS_THAN ? -1 : r == CSTR_GREATER_THAN ? 1 : 0;
+}
+
+const std::vector<Track>& App::sortedSongs()
+{
+	long long key = ((long long)plVersion << 8) | (songSort << 1) | (songSortDesc ? 1 : 0);
+	if (key == songsViewKey && songsView.size() == libTracks.size()) return songsView;
+	songsViewKey = key;
+	songsView = libTracks;
+	if (songSort == SortDefault) { if (songSortDesc) std::reverse(songsView.begin(), songsView.end()); return songsView; }
+	auto ext = [](const std::wstring& p) { size_t d = p.find_last_of(L'.'); return d == std::wstring::npos ? std::wstring() : p.substr(d); };
+	auto albumOrder = [&](const Track& a, const Track& b) {
+		// within an album: disc order as tagged, then the file name
+		if (int c = naturalCompare(a.album, b.album)) return c;
+		if (a.info.track != b.info.track) return a.info.track < b.info.track ? -1 : 1;
+		return naturalCompare(a.path, b.path);
+	};
+	int sortKey = songSort;
+	auto cmp = [&](const Track& a, const Track& b) -> int {
+		switch (sortKey)
+		{
+		case SortTitle: if (int c = naturalCompare(a.title, b.title)) return c; return naturalCompare(a.artist, b.artist);
+		case SortArtist: if (int c = naturalCompare(a.artist, b.artist)) return c; return albumOrder(a, b);
+		case SortAlbum: return albumOrder(a, b);
+		case SortFormat:
+			if (int c = naturalCompare(ext(a.path), ext(b.path))) return c;
+			if (a.info.bitsPerSample != b.info.bitsPerSample) return a.info.bitsPerSample < b.info.bitsPerSample ? -1 : 1;
+			if (a.info.sampleRate != b.info.sampleRate) return a.info.sampleRate < b.info.sampleRate ? -1 : 1;
+			return naturalCompare(a.artist, b.artist);
+		case SortTime: if (a.info.durationMs != b.info.durationMs) return a.info.durationMs < b.info.durationMs ? -1 : 1; return 0;
+		case SortAdded:
+			// files that arrived together (an album import) keep album order among themselves
+			if (a.added / 600000000ull != b.added / 600000000ull) return a.added < b.added ? -1 : 1;   // per minute
+			return -albumOrder(a, b);
+		}
+		return 0;
+	};
+	bool desc = songSortDesc;
+	std::stable_sort(songsView.begin(), songsView.end(), [&](const Track& a, const Track& b) {
+		int c = cmp(a, b);
+		return desc ? c > 0 : c < 0;
+	});
+	return songsView;
+}
+
+void App::setSort(int key)
+{
+	if (key == songSort) songSortDesc = !songSortDesc;
+	else
+	{
+		songSort = key;
+		songSortDesc = key == SortAdded;   // newest first
+	}
+	listScroll = 0;
 	InvalidateRect(hwnd, nullptr, FALSE);
 }
 
@@ -1296,10 +1421,9 @@ void App::openMenu(Hit target, int index, float x, float y)
 	auto songPath = [&]() -> std::wstring {
 		switch (target)
 		{
-		case Hit::LibraryRow: return index < (int)libTracks.size() ? libTracks[index].path : L"";
+		case Hit::LibraryRow: return index >= 0 && index < (int)sortedSongs().size() ? sortedSongs()[index].path : L"";
 		case Hit::NowAlbumRow: return nowAlbum >= 0 && nowAlbum < (int)albums.size() && index < (int)albums[nowAlbum].tracks.size() ? libTracks[albums[nowAlbum].tracks[index]].path : L"";
 		case Hit::AlbumRow: { int al = findAlbum(); return al >= 0 && index < (int)albums[al].tracks.size() ? libTracks[albums[al].tracks[index]].path : L""; }
-		case Hit::AddedTile: return index < (int)recentlyAdded.size() ? libTracks[recentlyAdded[index]].path : L"";
 		case Hit::RecentTile: return index < (int)recentPlayed.size() ? recentPlayed[index] : L"";
 		case Hit::QueueRow: return index < (int)queue.size() ? queue[index].path : L"";
 		case Hit::PlaylistRow: { const auto& l = playlistTracks(openPlaylist); return index < (int)l.size() ? l[index].path : L""; }
@@ -1314,6 +1438,7 @@ void App::openMenu(Hit target, int index, float x, float y)
 		if (index == -2) return;
 		target = Hit::PlaylistNav;
 	}
+	if (target == Hit::AddedTile) { target = Hit::AlbumTile; index = index >= 0 && index < (int)recentlyAdded.size() ? recentlyAdded[index] : -1; }
 	if (target == Hit::ArtistAlbum) { target = Hit::AlbumTile; index = index >= 0 && index < (int)artistAlbums.size() ? artistAlbums[index] : -1; }
 	if (target == Hit::TilePlay) return;
 	if (target == Hit::PlaylistNav)
@@ -1350,7 +1475,7 @@ void App::openMenu(Hit target, int index, float x, float y)
 	else
 	{
 		std::wstring p = songPath();
-		if (p.empty()) { if (menuOpen) { menuOpen = false; InvalidateRect(hwnd, nullptr, FALSE); } return; }
+		if (p.empty()) { if (menuOpen) { menuOpen = menuUp = menuLeft = false; InvalidateRect(hwnd, nullptr, FALSE); } return; }
 		menuPaths.push_back(p);
 		bool fromNow = target == Hit::NowMore;   // Now playing already has Play, Favourite and Add to library buttons
 		if (target == Hit::QueueRow && index >= 0 && index != current)
@@ -1730,7 +1855,7 @@ void App::finishCover()
 	coverFor = -1;
 	if (!resumePath.empty() && current >= 0 && queue[current].path == resumePath && audioOk)
 	{
-		if (player.load(fsPath(resumePath)))
+		if (player.load(fsPath(resumePath), current >= 0 ? queue[current].info.bitsPerSample : 0))
 		{
 			player.seek(resumeAt);
 			if (resumeAfterCover) player.play();
@@ -1807,7 +1932,7 @@ void App::saveLyrics(const std::wstring& raw)
 	if (audioOk) player.setVolume(volume);
 	std::string err;
 	bool ok = writeLyrics(narrow(path), narrow(text), err);
-	if (audioOk && player.load(fsPath(path)))
+	if (audioOk && player.load(fsPath(path), current >= 0 ? queue[current].info.bitsPerSample : 0))
 	{
 		player.seek(at);
 		if (wasPlaying) player.play();
@@ -1838,6 +1963,40 @@ void App::pasteLyrics()
 	saveLyrics(text);
 }
 
+// Saves the lyrics as they are in the tag: .lrc when they carry timestamps, else .txt.
+void App::exportLyrics()
+{
+	if (current < 0) return;
+	const Track& t = queue[current];
+	std::wstring text = lyricsFor(t);
+	if (text.empty()) return;
+	bool timed = false;
+	for (size_t i = 0; i + 3 < text.size() && !timed; i = text.find(L'\n', i) == std::wstring::npos ? text.size() : text.find(L'\n', i) + 1)
+		timed = text[i] == L'[' && iswdigit(text[i + 1]);
+	std::wstring name = t.title;
+	for (wchar_t& c : name) if (wcschr(L"<>:\"/\\|?*", c) || c < 32) c = L'_';
+	name += timed ? L".lrc" : L".txt";
+	std::vector<wchar_t> buf(MAX_PATH * 4, L'\0');
+	wcsncpy_s(buf.data(), buf.size(), name.c_str(), _TRUNCATE);
+	OPENFILENAMEW ofn = { sizeof(ofn) };
+	ofn.hwndOwner = hwnd;
+	ofn.lpstrFilter = timed ? L"Synced lyrics (*.lrc)\0*.lrc\0Text (*.txt)\0*.txt\0" : L"Text (*.txt)\0*.txt\0Synced lyrics (*.lrc)\0*.lrc\0";
+	ofn.lpstrFile = buf.data();
+	ofn.nMaxFile = (DWORD)buf.size();
+	ofn.lpstrDefExt = timed ? L"lrc" : L"txt";
+	ofn.lpstrTitle = L"Export lyrics";
+	ofn.Flags = OFN_EXPLORER | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+	if (!GetSaveFileNameW(&ofn)) return;
+	std::wstring crlf;
+	for (wchar_t c : text) { if (c == L'\n') crlf += L"\r\n"; else crlf += c; }
+	std::string bytes = narrow(crlf) + "\r\n";
+	FILE* f = nullptr;
+	bool ok = _wfopen_s(&f, buf.data(), L"wb") == 0 && f && fwrite(bytes.data(), 1, bytes.size(), f) == bytes.size();
+	if (f) fclose(f);
+	notice = ok ? L"Lyrics exported" : L"Couldn't write that file";
+	InvalidateRect(hwnd, nullptr, FALSE);
+}
+
 void App::loadLyricsFile()
 {
 	std::vector<wchar_t> buf(MAX_PATH * 4, L'\0');
@@ -1866,6 +2025,56 @@ void App::loadLyricsFile()
 	MultiByteToWideChar(cp, 0, bytes.data(), (int)bytes.size(), &text[0], n);
 	if (text.find_first_not_of(L" \t\r\n") == std::wstring::npos) { notice = L"That file is empty"; InvalidateRect(hwnd, nullptr, FALSE); return; }
 	saveLyrics(text);
+}
+
+void App::openDeviceMenu(float x, float y)
+{
+	menu.clear();
+	menuPaths.clear();
+	deviceNames = player.outputDevices();
+	const std::wstring& chosen = audioMode == 2 ? asioDriver : outputDevice;
+	if (audioMode == 2 && deviceNames.empty()) menu.push_back({ L"No ASIO drivers installed", Act::PickDevice, false, -2, Look::Heading });
+	else menu.push_back({ audioMode == 2 ? L"First installed driver" : L"System default", Act::PickDevice, false, -1, Look::Item, chosen.empty() });
+	for (int i = 0; i < (int)deviceNames.size(); ++i)
+		menu.push_back({ widen(deviceNames[i]), Act::PickDevice, false, i, Look::Item, widen(deviceNames[i]) == chosen });
+	menuX = x;
+	menuY = y;
+	menuOpen = true;
+}
+
+void App::pickDevice(const std::wstring& name)
+{
+	(audioMode == 2 ? asioDriver : outputDevice) = name;
+	reopenAudio();
+	saveState();
+}
+
+void App::setAudioMode(int mode)
+{
+	audioMode = mode;
+	reopenAudio();
+	if (mode != 0 && current >= 0 && !player.exclusiveProblem().empty()) notice = widen(player.exclusiveProblem());
+	saveState();
+}
+
+// Reopens the output with the current device and mode, carrying on where playback was.
+void App::reopenAudio()
+{
+	bool wasPlaying = player.getState() == State::Playing;
+	double at = player.position();
+	player.uninit();
+	player.setMode(audioMode);
+	player.chooseDevice(narrow(outputDevice));
+	player.chooseAsioDriver(narrow(asioDriver));
+	audioOk = player.init(0, 0);
+	if (audioOk) player.setVolume(volume);
+	if (audioOk && current >= 0 && player.load(fsPath(queue[current].path), current >= 0 ? queue[current].info.bitsPerSample : 0))
+	{
+		player.seek(at);
+		if (wasPlaying) player.play();
+	}
+	updateTimer();
+	InvalidateRect(hwnd, nullptr, FALSE);
 }
 
 void App::wheelScroll(float& value, float max, float delta, bool precise)
@@ -2020,7 +2229,7 @@ void App::playIndex(int i)
 		player.pause();
 		error = L"LossCat can't play " + extUpper(t.path) + L" files yet. We're working on it.";
 	}
-	else if (!player.load(fsPath(t.path)))
+	else if (!player.load(fsPath(t.path), current >= 0 ? queue[current].info.bitsPerSample : 0))
 	{
 		error = L"Couldn't open this file";
 	}
@@ -2054,6 +2263,37 @@ void App::rebuildOrder()
 	{
 		orderPos = current;
 	}
+}
+
+void App::enqueue(const std::vector<std::wstring>& paths, bool playNext)
+{
+	if (paths.empty()) return;
+	ensureOrder();
+	bool idle = current < 0;
+	int first = (int)queue.size();
+	for (const auto& p : paths)
+	{
+		auto it = std::find_if(libTracks.begin(), libTracks.end(), [&](const Track& t) { return t.path == p; });
+		if (it != libTracks.end()) queue.push_back(*it);
+		else
+		{
+			DWORD attr = GetFileAttributesW(p.c_str());
+			if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) continue;
+			queue.push_back(makeTrack(p, readTrackInfo(fsPath(p)), true));
+		}
+	}
+	// New songs go into the play order as they are, even with shuffle on: you chose where they go.
+	// Play next: straight after the current song. Add to queue: after the current song and after
+	// anything you queued before, but ahead of the rest of the album or playlist.
+	std::vector<int> added;
+	for (int i = first; i < (int)queue.size(); ++i) { added.push_back(i); queue[i].queued = true; }
+	size_t at = orderPos >= 0 ? (size_t)orderPos + 1 : 0;
+	if (at > order.size()) at = order.size();
+	if (!playNext)
+		while (at < order.size() && queue[order[at]].queued) ++at;
+	order.insert(order.begin() + at, added.begin(), added.end());
+	if (idle && !added.empty()) playIndex(added.front());
+	InvalidateRect(hwnd, nullptr, FALSE);
 }
 
 void App::moveQueued(int qi, int slot)
@@ -2120,37 +2360,6 @@ int App::queueSlotAt(float y) const
 		last = r.up + 1;
 	}
 	return last;
-}
-
-void App::enqueue(const std::vector<std::wstring>& paths, bool playNext)
-{
-	if (paths.empty()) return;
-	ensureOrder();
-	bool idle = current < 0;
-	int first = (int)queue.size();
-	for (const auto& p : paths)
-	{
-		auto it = std::find_if(libTracks.begin(), libTracks.end(), [&](const Track& t) { return t.path == p; });
-		if (it != libTracks.end()) queue.push_back(*it);
-		else
-		{
-			DWORD attr = GetFileAttributesW(p.c_str());
-			if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) continue;
-			queue.push_back(makeTrack(p, readTrackInfo(fsPath(p)), true));
-		}
-	}
-	// New songs go into the play order as they are, even with shuffle on: you chose where they go.
-	// Play next: straight after the current song. Add to queue: after the current song and after
-	// anything you queued before, but ahead of the rest of the album or playlist.
-	std::vector<int> added;
-	for (int i = first; i < (int)queue.size(); ++i) { added.push_back(i); queue[i].queued = true; }
-	size_t at = orderPos >= 0 ? (size_t)orderPos + 1 : 0;
-	if (at > order.size()) at = order.size();
-	if (!playNext)
-		while (at < order.size() && queue[order[at]].queued) ++at;
-	order.insert(order.begin() + at, added.begin(), added.end());
-	if (idle && !added.empty()) playIndex(added.front());
-	InvalidateRect(hwnd, nullptr, FALSE);
 }
 
 void App::ensureOrder()
@@ -2308,6 +2517,7 @@ void App::saveState()
 	s += "repeat=" + std::to_string(repeat) + "\n";
 	s += "sidebar=" + std::string(collapsed ? "collapsed" : "open") + "\n";
 	s += "queuePanel=" + std::string(queueOpen ? "open" : "closed") + "\n";
+	s += "songSort=" + std::to_string(songSort) + (songSortDesc ? ",desc" : ",asc") + "\n";
 	if (current >= 0)
 	{
 		s += "current=" + std::to_string(current) + "\n";
@@ -2324,6 +2534,9 @@ void App::saveState()
 	for (const std::wstring& p : recentPlayed) s += "recent=" + narrow(p) + "\n";
 	for (const std::wstring& f : musicFolders) s += "folder=" + narrow(f) + "\n";
 	if (!customLibraryDir.empty()) s += "libraryFolder=" + narrow(customLibraryDir) + "\n";
+	s += "audioMode=" + std::to_string(audioMode) + "\n";
+	if (!asioDriver.empty()) s += "asioDriver=" + narrow(asioDriver) + "\n";
+	if (!outputDevice.empty()) s += "device=" + narrow(outputDevice) + "\n";
 	for (const std::wstring& h : hiddenFiles) s += "hidden=" + narrow(h) + "\n";
 
 	// Write a temporary file and swap it in, so a crash mid-write can't leave a broken state.
@@ -2371,6 +2584,12 @@ void App::loadState()
 		else if (key == "repeat") { repeat = atoi(val.c_str()); if (repeat < 0 || repeat > 2) repeat = 0; }
 		else if (key == "sidebar") collapsed = val == "collapsed";
 		else if (key == "queuePanel") queueOpen = val == "open";
+		else if (key == "songSort")
+		{
+			int k = atoi(val.c_str());
+			if (k >= SortDefault && k <= SortAdded) songSort = k;
+			songSortDesc = val.find("desc") != std::string::npos;
+		}
 		else if (key == "current") savedCurrent = atoi(val.c_str());
 		else if (key == "position") position = atof(val.c_str());
 		else if (key == "order")
@@ -2386,12 +2605,24 @@ void App::loadState()
 		else if (key == "track" && tracks.size() < 5000) tracks.push_back(widen(val));
 		else if (key == "folder") musicFolders.push_back(widen(val));
 		else if (key == "libraryFolder") customLibraryDir = widen(val);
+		else if (key == "exclusive") audioMode = val == "1" ? 1 : 0;   // older state files
+		else if (key == "audioMode") { audioMode = atoi(val.c_str()); if (audioMode < 0 || audioMode > 2) audioMode = 0; }
+		else if (key == "asioDriver") asioDriver = widen(val);
+		else if (key == "device") outputDevice = widen(val);
 		else if (key == "hidden") hiddenFiles.push_back(widen(val));
 		else if (key == "recent" && recentPlayed.size() < 12)
 		{
 			std::wstring p = widen(val);
 			if (GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES) recentPlayed.push_back(p);
 		}
+	}
+	if (audioMode != 0 || !outputDevice.empty())
+	{
+		player.uninit();
+		player.setMode(audioMode);
+		player.chooseDevice(narrow(outputDevice));
+		player.chooseAsioDriver(narrow(asioDriver));
+		audioOk = player.init(0, 0);
 	}
 	if (audioOk) player.setVolume(volume);
 	loadLibrary();   // needs the music folders read above
@@ -2432,7 +2663,7 @@ void App::loadState()
 		t.coverBytes = std::move(readTrackInfo(fsPath(t.path)).coverData);
 		t.coverLoaded = true;
 		if (position > t.info.durationMs / 1000.0 - 2) position = 0;   // it had finished; start it over
-		if (audioOk && canPlay(t.path) && player.load(fsPath(t.path)) && position > 0) player.seek(position);
+		if (audioOk && canPlay(t.path) && player.load(fsPath(t.path), current >= 0 ? queue[current].info.bitsPerSample : 0) && position > 0) player.seek(position);
 		std::wstring title = t.title + L" - LossCat";
 		SetWindowTextW(hwnd, title.c_str());
 	}

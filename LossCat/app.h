@@ -23,6 +23,7 @@ enum class Hit
 	OpenFiles, SignalPath,
 	Panel,           // background that swallows clicks (not a drag area)
 	QueueRow, QueueRemove, QueueClear, QueueUndo,
+	SortHeader, SortMenu,
 	LibraryRow,
 	OpenLibraryFolder, ChangeLibraryFolder, AddMusicFolder, RemoveMusicFolder, OpenMusicFolder, ShowHidden,
 	LibTabAlbums, LibTabArtists, LibTabSongs,
@@ -43,9 +44,10 @@ enum class Hit
 	Back,
 	CancelImport,
 	TilePlay,
+	ModeShared, ModeExclusive, ModeAsio, DeviceMenu, ModeMenu, BarDevice,
 	NowAlbumRow, GoToAlbum, NowMore,
 	SmartNav, SmartRow,
-	LyricLine, LyricScroll, LyricCopy, LyricPaste, LyricFile, LyricRemove,        // play button on a hovered album tile
+	LyricLine, LyricScroll, LyricCopy, LyricExport, LyricPaste, LyricFile, LyricRemove,        // play button on a hovered album tile
 	GroupBack, GroupPlay, GroupShuffle, AlbumRow, AlbumCover, AlbumArtist, ArtistAlbum,
 };
 
@@ -58,9 +60,12 @@ struct Track
 	std::wstring title, artist, album;
 	std::vector<unsigned char> coverBytes;
 	bool coverLoaded = false;
+	unsigned long long bytes = 0;   // file size, for the totals in Settings and About album
 	bool queued = false;            // added with Play next / Add to queue
+	unsigned long long added = 0;   // when the file arrived (its creation time), for "Date added"
 };
 
+std::wstring fmtSize(unsigned long long bytes);   // "812 MB", "2.4 GB"
 double nowMs();   // high-resolution clock for animations
 std::string fsPath(const std::wstring& path);
 
@@ -128,7 +133,19 @@ private:
 	void drawEditBox(const Rect& r, float size, Font f);
 	void drawConfirm();
 	void drawEmpty(const Rect& area, const wchar_t* heading, const wchar_t* body, bool button);
-	void drawTrackRows(const Rect& area, const std::vector<Track>& list, Hit rowHit);
+	void drawTrackRows(const Rect& area, const std::vector<Track>& list, Hit rowHit, bool sortable = false);
+	// A playlist's picture: its first album cover, or four of them in a grid; an icon when it has none.
+	void drawMosaic(const Rect& r, const std::vector<Track>& list, const char* icon);
+
+	// ---- sorting the Songs tab
+	enum SortKey { SortDefault, SortTitle, SortArtist, SortAlbum, SortFormat, SortTime, SortAdded };
+	int songSort = SortDefault;
+	bool songSortDesc = false;
+	std::vector<Track> songsView;          // libTracks in the chosen order; what the Songs tab shows and plays
+	long long songsViewKey = -1;
+	const std::vector<Track>& sortedSongs();
+	void setSort(int key);                 // a header click: new column ascending (newest first for dates), same column flips
+	Rect sortButton;
 	void hot(const Rect& r, Hit id, int index = -1);
 	bool hovered(Hit id, int index = -1) const { return hoverHit == id && (index < 0 || hoverIndex == index); }
 	bool pressed(Hit id, int index = -1) const { return pressHit == id && hovered(id, index); }
@@ -212,7 +229,7 @@ private:
 	std::wstring libraryDir;
 	std::vector<Track> libTracks;
 	std::vector<Group> albums, artists;
-	std::vector<int> recentlyAdded;
+	std::vector<int> recentlyAdded;   // albums, newest first
 	std::vector<std::wstring> recentPlayed;
 	struct CachedCover { ComPtr<ID2D1Bitmap> bmp; unsigned long long lastUsed = 0; };
 	std::unordered_map<std::wstring, CachedCover> covers;
@@ -224,15 +241,16 @@ private:
 	Rect pageArea;
 	std::wstring notice;
 
-	enum class Act { Play, AddToLibrary, Remove, SetCover, Favourite, Unfavourite, PlaylistMenu, AddTo, NewWith, RemoveFromPlaylist, PlayPlaylist, RenamePlaylist, DeletePlaylist, PlayNext, AddToQueue, PlayNow, MoveNext, MoveEnd, RemoveQueued, ClearUpNext };
+	enum class Act { Play, AddToLibrary, Remove, SetCover, Favourite, Unfavourite, PlaylistMenu, AddTo, NewWith, RemoveFromPlaylist, PlayPlaylist, RenamePlaylist, DeletePlaylist, PickDevice, PickMode, PlayNext, AddToQueue, PlayNow, MoveNext, MoveEnd, RemoveQueued, ClearUpNext, PickSort };
 	enum class Look { Item, Heading, Action, Separator };   // Action: icon, bold, line under it
-	struct MenuEntry { std::wstring label; Act act; bool danger; int arg = -1; Look look = Look::Item; };
+	struct MenuEntry { std::wstring label; Act act; bool danger; int arg = -1; Look look = Look::Item; bool checked = false; };
 	bool menuOpen = false;
 	// Name shown beside a hovered playlist when the sidebar is collapsed.
 	std::wstring tipText;
 	float tipX = 0, tipY = 0;
 	void drawTip();
 	float menuX = 0, menuY = 0;
+	bool menuUp = false, menuLeft = false;   // open above / to the left of the anchor
 	std::vector<MenuEntry> menu;
 	std::vector<std::wstring> menuPaths;
 	bool confirmOpen = false;
@@ -256,6 +274,7 @@ private:
 	void saveLyrics(const std::wstring& text);
 	void pasteLyrics();
 	void loadLyricsFile();
+	void exportLyrics();
 
 	// Volume, queue, history and a few view settings, kept in %APPDATA%\LossCat\state.txt.
 	std::wstring statePath() const;
@@ -366,6 +385,17 @@ private:
 	struct Smooth { float* value; float target; float last; };
 	std::vector<Smooth> smooths;
 	double lastScrollFrame = 0;
+
+	// WASAPI exclusive mode (bit-perfect output), saved in state.txt.
+	int audioMode = 0;          // 0 shared, 1 WASAPI exclusive, 2 ASIO
+	std::wstring asioDriver;    // chosen ASIO driver; empty = the first installed
+	void setAudioMode(int mode);
+	std::wstring outputDevice;   // chosen by name; empty = system default
+	std::vector<std::string> deviceNames;
+	Rect deviceButton, modeButton, barDeviceButton;
+	void openDeviceMenu(float x, float y);
+	void pickDevice(const std::wstring& name);
+	void reopenAudio();
 	bool scrollMoving = false;
 	void wheelScroll(float& value, float max, float delta, bool precise);
 	void stepScroll();

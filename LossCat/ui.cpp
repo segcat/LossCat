@@ -20,6 +20,7 @@ namespace icons
 	const char* catTail = "M14 19.3C16.8 19.8 19.6 19.9 20.6 18.6C21.4 17.5 20.7 16.2 19.5 16.6";
 	const char* toggle = "M5 4H19A2 2 0 0 1 21 6V18A2 2 0 0 1 19 20H5A2 2 0 0 1 3 18V6A2 2 0 0 1 5 4ZM9 4v16";
 	const char* now = "M21 12A9 9 0 1 1 3 12A9 9 0 1 1 21 12ZM15 12A3 3 0 1 1 9 12A3 3 0 1 1 15 12Z";
+	const char* speaker = "M7 3h10a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM15.5 14a3.5 3.5 0 1 1-7 0 3.5 3.5 0 1 1 7 0ZM12 7.5h.01";
 	const char* home = "M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z";
 	const char* library = "M4 4v16M9 4v16M14 4l5 16";
 	const char* check = "M5 12.5l4.5 4.5L19 7.5";
@@ -118,6 +119,17 @@ static std::wstring qualityOf(const Track& t)
 }
 
 // ---------------------------------------------------------------- animation state
+
+std::wstring fmtSize(unsigned long long bytes)
+{
+	// Binary units like Explorer, so the numbers match what Windows shows.
+	wchar_t b[32];
+	double mb = bytes / (1024.0 * 1024.0);
+	if (mb < 1) swprintf(b, 32, L"%llu KB", bytes / 1024);
+	else if (mb < 1024) swprintf(b, 32, mb < 10 ? L"%.1f MB" : L"%.0f MB", mb);
+	else swprintf(b, 32, mb < 10240 ? L"%.2f GB" : L"%.1f GB", mb / 1024);
+	return b;
+}
 
 double nowMs()
 {
@@ -589,7 +601,7 @@ void App::drawEmpty(const Rect& a, const wchar_t* heading, const wchar_t* body, 
 	}
 }
 
-void App::drawTrackRows(const Rect& a, const std::vector<Track>& list, Hit rowHit)
+void App::drawTrackRows(const Rect& a, const std::vector<Track>& list, Hit rowHit, bool sortable)
 {
 	float flexW = (a.right() - 12 - 56 - 36 - 16 - 110) - (a.x + 52);
 	bool showAlbum = flexW >= 420;
@@ -598,11 +610,22 @@ void App::drawTrackRows(const Rect& a, const std::vector<Track>& list, Hit rowHi
 
 	float y = a.y;
 	g.text(L"#", { colX[0], y, 30, 30 }, 12, Font::Ui, col::muted);
-	g.text(L"Title", { colX[1], y, wTitle - 16, 30 }, 12, Font::Ui, col::muted);
-	g.text(L"Artist", { colX[2], y, wArtist - 16, 30 }, 12, Font::Ui, col::muted);
-	if (showAlbum) g.text(L"Album", { colX[3], y, wAlbum - 16, 30 }, 12, Font::Ui, col::muted);
-	g.text(L"Format", { colX[4], y, 110, 30 }, 12, Font::Ui, col::muted);
-	g.text(L"Time", { colX[5], y, 56, 30 }, 12, Font::Ui, col::muted, Align::Right);
+	// Headers; in a sortable list each is a button, the sorted one bright with an arrow.
+	auto header = [&](const wchar_t* label, float hx, float hw, int key, bool right) {
+		bool on = sortable && songSort == key;
+		bool hv = sortable && hovered(Hit::SortHeader, key);
+		uint32_t c = on || hv ? col::text : col::muted;
+		float lw = g.textWidth(label, 12, on ? Font::UiMedium : Font::Ui);
+		float lx = right ? hx + hw - lw - (on ? 16 : 0) : hx;
+		g.text(label, { lx, y, lw + 2, 30 }, 12, on ? Font::UiMedium : Font::Ui, c);
+		if (on) g.icon(songSortDesc ? "M6 9l6 6 6-6" : "M6 15l6-6 6 6", { lx + lw + 3, y + 8, 13, 13 }, col::text, false, 1.8f);
+		if (sortable) hot({ right ? hx + hw - lw - 22 : hx - 4, y, lw + 26, 30 }, Hit::SortHeader, key);
+	};
+	header(L"Title", colX[1], wTitle - 16, SortTitle, false);
+	header(L"Artist", colX[2], wArtist - 16, SortArtist, false);
+	if (showAlbum) header(L"Album", colX[3], wAlbum - 16, SortAlbum, false);
+	header(L"Format", colX[4], 110, SortFormat, false);
+	header(L"Time", colX[5], 56, SortTime, true);
 	y += 30;
 	g.line(a.x, y - 0.5f, a.right(), y - 0.5f, col::line, 1);
 
@@ -699,14 +722,23 @@ float App::drawTiles(const std::vector<Tile>& tiles, float x, float y, float w, 
 		const Tile& t = tiles[i];
 		Rect r{ x + (i % cols) * (tw + gap), y + (i / cols) * (th + (round ? 0 : gap)), tw, th };
 		if (r.bottom() < pageArea.y || r.y > pageArea.bottom()) continue;
-		bool hov = hovered(hit, i) || ((hit == Hit::AlbumTile || hit == Hit::ArtistAlbum) && hovered(Hit::TilePlay, i));
-		if (hov && !round) g.fill(r, col::hover, 4);
+		bool hov = hovered(hit, i) || ((hit == Hit::AlbumTile || hit == Hit::ArtistAlbum || hit == Hit::AddedTile) && hovered(Hit::TilePlay, i));
+		float ha = anim(hit, i, hov);
+		if (ha > 0.01f && !round) g.fill(r, col::hover, 4, ha);
 		Rect img{ r.x + pad, r.y + pad, tw - 2 * pad, tw - 2 * pad };
 		if (round)
 		{
-			g.circle(img.cx(), img.cy(), img.w / 2, hov ? 0x353535 : 0x2E2E2E);
-			std::wstring initial = t.title.empty() ? L"?" : t.title.substr(0, 1);
-			g.text(initial, img, img.w * 0.32f, Font::UiMedium, col::dim, Align::Center);
+			if (ID2D1Bitmap* bmp = t.coverPath.empty() ? nullptr : coverOf(t.coverPath))
+			{
+				g.image(bmp, img, img.w / 2);
+				if (hov) g.circle(img.cx(), img.cy(), img.w / 2, 0xFFFFFF, true, 1, 0.08f);
+			}
+			else
+			{
+				g.circle(img.cx(), img.cy(), img.w / 2, hov ? 0x353535 : 0x2E2E2E);
+				std::wstring initial = t.title.empty() ? L"?" : t.title.substr(0, 1);
+				g.text(initial, img, img.w * 0.32f, Font::UiMedium, col::dim, Align::Center);
+			}
 		}
 		else
 		{
@@ -734,7 +766,7 @@ float App::drawTiles(const std::vector<Tile>& tiles, float x, float y, float w, 
 				}
 			}
 			g.stroke(img, 0x313131, 2, 1, 0.6f);
-			if (hov && (hit == Hit::AlbumTile || hit == Hit::ArtistAlbum))
+			if (hov && (hit == Hit::AlbumTile || hit == Hit::ArtistAlbum || hit == Hit::AddedTile))
 			{
 				Rect pb{ img.right() - 44, img.bottom() - 44, 36, 36 };
 				bool ph = hovered(Hit::TilePlay, i);
@@ -749,7 +781,7 @@ float App::drawTiles(const std::vector<Tile>& tiles, float x, float y, float w, 
 			}
 		}
 		hotVisible(r, hit, i);
-		if (hov && (hit == Hit::AlbumTile || hit == Hit::ArtistAlbum))
+		if (hov && (hit == Hit::AlbumTile || hit == Hit::ArtistAlbum || hit == Hit::AddedTile))
 			hotVisible({ img.right() - 44, img.bottom() - 44, 36, 36 }, Hit::TilePlay, i);
 		float ty = img.bottom() + 10;
 		g.text(t.title, { r.x + pad, ty, tw - 2 * pad, 18 }, 13, Font::UiMedium, t.playing ? col::white : col::text, round ? Align::Center : Align::Left);
@@ -792,10 +824,17 @@ void App::drawHome(const Rect& a)
 		sectionTitle(g, L"Recently played", a.x, y, a.w);
 		y += 34;
 		std::vector<Tile> tiles;
+		// One tile per entry, in order, so a tile's index is its place in recentPlayed.
+		// The song may have left the queue since; the library still knows it.
 		for (const auto& p : recentPlayed)
 		{
-			auto it = std::find_if(queue.begin(), queue.end(), [&](const Track& t) { return t.path == p; });
-			if (it != queue.end()) tiles.push_back(songTile(*it));
+			auto same = [&](const Track& t) { return t.path == p; };
+			auto it = std::find_if(queue.begin(), queue.end(), same);
+			if (it != queue.end()) { tiles.push_back(songTile(*it)); continue; }
+			auto lt = std::find_if(libTracks.begin(), libTracks.end(), same);
+			if (lt != libTracks.end()) { tiles.push_back(songTile(*lt)); continue; }
+			std::wstring name = p.substr(p.find_last_of(L"\\/") + 1);
+			tiles.push_back({ name, L"", p, playing && *playing == p });
 		}
 		y += drawTiles(tiles, a.x, y, a.w, Hit::RecentTile, false) + 30;
 	}
@@ -804,7 +843,13 @@ void App::drawHome(const Rect& a)
 		sectionTitle(g, L"Recently added", a.x, y, a.w);
 		y += 34;
 		std::vector<Tile> tiles;
-		for (int i : recentlyAdded) tiles.push_back(songTile(libTracks[i]));
+		for (int k : recentlyAdded)
+		{
+			const Group& al = albums[k];
+			bool on = false;
+			for (int i : al.tracks) if (playing && *playing == libTracks[i].path) on = true;
+			tiles.push_back({ al.name, al.artist, libTracks[al.tracks.front()].path, on });
+		}
 		y += drawTiles(tiles, a.x, y, a.w, Hit::AddedTile, false) + 30;
 	}
 	if (!artists.empty())
@@ -812,7 +857,7 @@ void App::drawHome(const Rect& a)
 		sectionTitle(g, L"Artists", a.x, y, a.w);
 		y += 38;
 		std::vector<Tile> tiles;
-		for (size_t i = 0; i < artists.size() && i < 14; ++i) tiles.push_back({ artists[i].name, L"", L"" });
+		for (size_t i = 0; i < artists.size() && i < 14; ++i) tiles.push_back({ artists[i].name, L"", libTracks[artists[i].tracks.front()].path });
 		y += drawTiles(tiles, a.x + 6, y, a.w - 12, Hit::ArtistTile, true) + 30;
 	}
 	pageMaxScroll = (y + pageScroll) - a.bottom();
@@ -837,18 +882,19 @@ void App::drawLibrary(const Rect& a)
 		hot(r, tabHits[i]);
 		tx += tw + 18;
 	}
+	// Import is a quiet text button; rescanning lives in Settings (and F5)
 	float bx = a.right() - 6;
-	auto button = [&](const wchar_t* label, Hit id, bool primary) {
-		float bw = g.textWidth(label, 13, Font::UiMedium) + 28;
+	{
+		bool hov = hovered(Hit::ImportFiles);
+		float bw = 10 + 14 + 6 + g.textWidth(L"Import", 13, Font::Ui) + 12;
 		Rect b{ bx - bw, y, bw, 30 };
-		if (primary) g.fill(b, hovered(id) ? 0xFFFFFF : col::text, 3);
-		else { if (hovered(id)) g.fill(b, col::hover, 3); g.stroke(b, col::chip, 3); }
-		g.text(label, b, 13, Font::UiMedium, primary ? 0x131313 : col::soft, Align::Center);
-		hot(b, id);
+		if (hov) g.fill(b, col::hover, 15);
+		uint32_t c = hov ? col::text : col::soft;
+		g.icon(icons::plus, { b.x + 10, b.cy() - 7, 14, 14 }, c, false, 1.8f);
+		g.text(L"Import", { b.x + 30, b.y, bw - 34, 30 }, 13, Font::Ui, c);
+		hot(b, Hit::ImportFiles);
 		bx -= bw + 8;
-	};
-	button(L"Import files", Hit::ImportFiles, true);
-	button(L"Rescan", Hit::Rescan, false);
+	}
 	if (importing)
 	{
 		float cw = g.textWidth(L"Cancel", 12, Font::Ui);
@@ -896,7 +942,20 @@ void App::drawLibrary(const Rect& a)
 		wchar_t cnt[32];
 		swprintf(cnt, 32, libTracks.size() == 1 ? L"%zu song" : L"%zu songs", libTracks.size());
 		g.text(cnt, { px + 8, y, 200, 30 }, 12, Font::Ui, col::muted);
-		drawTrackRows({ body.x, y + 30 + 16, body.w, body.h - 46 }, libTracks, Hit::LibraryRow);
+		// Sort on the right of this row: shows the current order, opens the list of orders
+		{
+			const wchar_t* names[] = { L"Default order", L"Title", L"Artist", L"Album", L"Format", L"Length", L"Date added" };
+			std::wstring label = std::wstring(L"Sort: ") + names[songSort];
+			float sw = g.textWidth(label, 12, Font::Ui) + 40;
+			Rect sb{ body.right() - sw, y, sw, 30 };
+			float h = anim(Hit::SortMenu, -1, hovered(Hit::SortMenu));
+			if (h > 0.01f) g.fill(sb, col::hover, 15, h);
+			g.text(label, { sb.x + 12, sb.y, sw - 34, 30 }, 12, Font::Ui, hovered(Hit::SortMenu) ? col::text : col::dim);
+			g.icon("M6 9l6 6 6-6", { sb.right() - 24, sb.cy() - 7, 14, 14 }, col::dim, false, 1.8f);
+			hot(sb, Hit::SortMenu);
+			sortButton = sb;
+		}
+		drawTrackRows({ body.x, y + 30 + 16, body.w, body.h - 46 }, sortedSongs(), Hit::LibraryRow, true);
 		return;
 	}
 	g.pushClip(body);
@@ -951,12 +1010,39 @@ void App::drawLibrary(const Rect& a)
 	else
 	{
 		std::vector<Tile> tiles;
-		for (const Group& ar : artists) tiles.push_back({ ar.name, L"", L"" });
+		for (const Group& ar : artists) tiles.push_back({ ar.name, L"", libTracks[ar.tracks.front()].path });
 		used = drawTiles(tiles, a.x + 6, cy, a.w - 12, Hit::ArtistTile, true);
 	}
 	g.popClip();
 	pageMaxScroll = used - body.h + 24;
 	if (pageMaxScroll < 0) pageMaxScroll = 0;
+}
+
+void App::drawMosaic(const Rect& r, const std::vector<Track>& list, const char* icon)
+{
+	// one song per album, first four albums in playlist order
+	std::vector<std::wstring> picks, seen;
+	for (const Track& t : list)
+	{
+		std::wstring key = t.album.empty() ? t.path : t.album + L"\x1F" + t.artist;
+		if (std::find(seen.begin(), seen.end(), key) != seen.end()) continue;
+		seen.push_back(key);
+		if (coverOf(t.path)) picks.push_back(t.path);
+		if (picks.size() == 4 || seen.size() > 40) break;
+	}
+	if (picks.empty())
+	{
+		g.fill(r, 0x232323, 3);
+		g.stroke(r, 0x313131, 3, 1, 0.6f);
+		g.icon(icon, { r.cx() - 14, r.cy() - 14, 28, 28 }, col::soft, false, 1.4f);
+		return;
+	}
+	if (picks.size() < 4) { g.image(coverOf(picks[0]), r, 3); return; }
+	float h = r.w / 2;
+	g.pushClip(r);
+	for (int k = 0; k < 4; ++k)
+		g.image(coverOf(picks[k]), { r.x + (k % 2) * h, r.y + (k / 2) * h, h, h }, 0);
+	g.popClip();
 }
 
 void App::drawPlaylist(const Rect& a)
@@ -968,18 +1054,24 @@ void App::drawPlaylist(const Rect& a)
 	const std::vector<Track>& list = playlistTracks(openPlaylist);
 	float y = a.y;
 
+	// picture on the left, name / songs / buttons beside it (same header as the smart playlist)
+	Rect tile{ a.x + 6, y, 96, 96 };
+	drawMosaic(tile, list, openPlaylist == 0 ? icons::heart : icons::note);
+	float hx = tile.right() + 24;
+	g.text(openPlaylist == 0 ? L"Favourites" : L"Playlist", { hx, y + 2, 300, 18 }, 12, Font::Ui, col::soft);
+	y += 20;
 	if (editPlaylist == openPlaylist)
-		drawEditBox({ a.x, y - 2, a.w * 0.5f, 34 }, 22, Font::UiMedium);
+		drawEditBox({ hx - 6, y - 2, (a.right() - hx) * 0.6f, 34 }, 22, Font::UiMedium);
 	else
-		g.text(widen(pl.name), { a.x + 6, y, a.w - 12, 30 }, 22, Font::UiMedium, col::text);
-	y += 34;
+		g.text(widen(pl.name), { hx, y, a.right() - hx, 30 }, 22, Font::UiMedium, col::text);
+	y += 32;
 	int secs = 0;
 	for (const Track& t : list) secs += t.info.durationMs / 1000;
 	wchar_t sub[64];
 	if (list.size() == 1) swprintf(sub, 64, L"1 song, %d min", (secs + 59) / 60);
 	else swprintf(sub, 64, L"%zu songs, %d min", list.size(), (secs + 59) / 60);
-	g.text(sub, { a.x + 6, y, a.w - 12, 20 }, 13, Font::Ui, col::dim);
-	y += 20 + 16;
+	g.text(sub, { hx, y, a.right() - hx, 20 }, 13, Font::Ui, col::dim);
+	y = tile.bottom() + 20;
 
 	float px = a.x + 6;
 	auto button = [&](const wchar_t* label, const char* icon, bool filled, Hit id, bool primary) {
@@ -1133,33 +1225,22 @@ void App::drawSmart(const Rect& a)
 	listArea = {};
 	std::vector<int> idx = smartTracks();
 	float x = a.x + 6, y = a.y;
+	std::vector<Track> list;
+	for (int i : idx) list.push_back(libTracks[i]);
 	Rect tile{ x, y, 96, 96 };
-	g.fill(tile, 0x232323, 3);
-	g.stroke(tile, 0x313131, 3, 1, 0.6f);
-	g.icon(icons::sparkle, { tile.cx() - 14, tile.cy() - 14, 28, 28 }, col::soft, false, 1.4f);
+	drawMosaic(tile, list, icons::sparkle);
 	float tx = tile.right() + 24;
-	g.text(L"Smart playlist", { tx, y + 12, 300, 18 }, 12, Font::Ui, col::soft);
-	g.text(L"Lossless 24-bit", { tx, y + 32, a.right() - tx, 32 }, 22, Font::UiMedium, col::text);
-	float cx = tx, cy = y + 70;
-	auto chip = [&](const std::wstring& s) {
-		float cw = g.textWidth(s, 12, Font::Mono) + 16;
-		Rect c{ cx, cy, cw, 24 };
-		g.stroke(c, col::chip, 3);
-		g.text(s, c, 12, Font::Mono, col::text, Align::Center);
-		cx += cw + 8;
-	};
-	chip(L"bit depth \x2265 24");
-	chip(L"lossless only");
-	std::wstring count = (idx.size() == 1 ? L"1 song" : std::to_wstring(idx.size()) + L" songs") + L", updates automatically";
-	g.text(count, { cx + 2, cy, a.right() - cx, 24 }, 13, Font::Ui, col::dim);
+	g.text(L"Smart playlist", { tx, y + 2, 300, 18 }, 12, Font::Ui, col::soft);
+	g.text(L"Lossless 24-bit", { tx, y + 20, a.right() - tx, 32 }, 22, Font::UiMedium, col::text);
+	std::wstring count = (idx.size() == 1 ? L"1 song" : std::to_wstring(idx.size()) + L" songs");
+	g.text(L"Lossless files at 24-bit or more \x00B7 " + count + L" \x00B7 updates by itself",
+		{ tx, y + 52, a.right() - tx, 20 }, 13, Font::Ui, col::dim);
 	y += 96 + 28;
 	if (idx.empty())
 	{
 		g.text(L"No 24-bit lossless songs in your library yet. They show up here as soon as you import some.", { x, y, a.w - 12, 20 }, 13, Font::Ui, col::dim);
 		return;
 	}
-	std::vector<Track> list;
-	for (int i : idx) list.push_back(libTracks[i]);
 	drawTrackRows({ a.x, y, a.w, a.bottom() - y }, list, Hit::SmartRow);
 }
 
@@ -1349,11 +1430,23 @@ void App::drawNowPlaying(const Rect& a)
 		label(L"Source", col::muted);
 		box(signalSource());
 		label(L"→", col::dim);
-		label(backend + L" shared", col::muted);
+		label(player.asioActive() ? backend : backend + (player.exclusiveActive() ? L" exclusive" : L" shared"), col::muted);
 		box(signalOutput());
 		label(L"→", col::dim);
 		bool same = info.sampleRate == (int)player.outputSampleRate();
-		if (same)
+		if (player.bitPerfect(current >= 0 ? queue[current].info.bitsPerSample : 0))
+		{
+			g.circle(px + 4, cyy, 3.5f, col::white);
+			px += 14;
+			label(L"Bit-perfect", col::white);
+		}
+		else if ((player.exclusiveActive() || player.asioActive()) && same)
+		{
+			g.circle(px + 4, cyy, 3, col::dim, false, 1);
+			px += 14;
+			label(volume < 0.9999f ? L"Volume below 100%, not bit-perfect" : L"Converted, not bit-perfect", col::dim);
+		}
+		else if (same)
 		{
 			g.circle(px + 4, cyy, 3.5f, col::white);
 			px += 14;
@@ -1487,10 +1580,6 @@ void App::drawNowPlaying(const Rect& a)
 		int albumSecs = 0;
 		if (al) for (int t : al->tracks) albumSecs += libTracks[t].info.durationMs / 1000;
 
-		std::wstring spec = qualityOf(tr), kind;
-		size_t comma = spec.find(L", ");
-		if (comma != std::wstring::npos) { kind = spec.substr(comma + 2); spec.resize(comma); }
-
 		struct Row { const wchar_t* k; std::wstring v; bool mono; std::wstring extra; };
 		std::vector<Row> rows = {
 			{ L"Album", tr.album.empty() ? L"Unknown" : tr.album, false, L"" },
@@ -1501,8 +1590,15 @@ void App::drawNowPlaying(const Rect& a)
 		{
 			rows.push_back({ L"Tracks", std::to_wstring(al->tracks.size()) + (al->tracks.size() == 1 ? L" track" : L" tracks"), false, L"" });
 			rows.push_back({ L"Length", fmtTime(albumSecs), true, L"" });
+			unsigned long long albumBytes = 0;
+			for (int t : al->tracks) albumBytes += libTracks[t].bytes;
+			if (albumBytes) rows.push_back({ L"Size", fmtSize(albumBytes), false, L"" });
 		}
-		rows.push_back({ L"Format", spec, true, kind });
+		// Plain, like the player bar: "FLAC · 24-bit · 44.1 kHz". No quality badge.
+		std::wstring fmtLine = codecOf(tr.path);
+		if (info.bitsPerSample) fmtLine += L" \x00B7 " + std::to_wstring(info.bitsPerSample) + L"-bit";
+		if (info.sampleRate) fmtLine += L" \x00B7 " + fmtRate(info.sampleRate) + L" kHz";
+		rows.push_back({ L"Format", fmtLine, false, L"" });
 
 		// Wide enough: details on the left, the album's songs beside them. Otherwise stacked.
 		bool side = al && w >= 480;
@@ -1661,6 +1757,7 @@ void App::drawLyrics(const Track& tr, const Rect& body)
 	}
 	int a = std::min(lyricSelA, lyricSelB), b = std::max(lyricSelA, lyricSelB);
 	action(lyricSelA < 0 ? L"Copy" : a == b ? L"Copy line" : L"Copy " + std::to_wstring(b - a + 1) + L" lines", Hit::LyricCopy);
+	action(L"Export\x2026", Hit::LyricExport);
 	if (editable)
 	{
 		action(L"Replace from clipboard", Hit::LyricPaste);
@@ -1735,11 +1832,96 @@ void App::drawSettings(const Rect& a)
 		if (last) { g.line(x, y - 0.5f, x + w, y - 0.5f, col::line, 1); y += 30; }
 	};
 
-	wchar_t fmt[96];
-	swprintf(fmt, 96, L"%u Hz, %u channels, %hs", player.deviceSampleRate(), player.deviceChannels(), player.deviceFormatName());
 	section(L"Audio");
-	row(L"Output device", widen(player.backendName()) + L", shared mode", audioOk ? widen(player.deviceName()) : L"No device", false, false);
-	row(L"Device format", L"", fmt, false, true);
+	{
+		auto rowLine = [&]() { g.line(x, y + 0.5f, x + w, y + 0.5f, col::line, 1); };
+
+		// A dropdown button at the right of a row; widths stay steady between choices.
+		auto dropdown = [&](const std::wstring& label, Hit id) {
+			float dw = std::min(std::max(g.textWidth(label, 13, Font::Ui) + 50, 130.0f), w * 0.55f);
+			Rect db{ x + w - dw, y + 13, dw, 34 };
+			float h = anim(id, -1, hovered(id));
+			g.fill(db, 0x202020, 6);
+			if (h > 0.01f) g.fill(db, col::ctlHover, 6, h);
+			g.stroke(db, h > 0.5f ? 0x4A4A4A : col::chip, 6);
+			g.text(label, { db.x + 14, db.y, db.w - 44, db.h }, 13, Font::Ui, col::text);
+			g.icon("M6 9l6 6 6-6", { db.right() - 28, db.cy() - 8, 16, 16 }, col::soft, false, 1.8f);
+			hotVisible(db, id, -1);
+			return db;
+		};
+
+		// Output: a dropdown with the device
+		rowLine();
+		g.text(L"Output", { x, y + 11, w * 0.4f, 20 }, 14, Font::Ui, col::text);
+		g.text(widen(player.backendName()).empty() ? L"No device open" : widen(player.backendName()),
+			{ x, y + 31, w * 0.4f, 18 }, 12, Font::Ui, col::dim);
+		std::wstring dev = audioOk && player.deviceName()[0] ? widen(player.deviceName())
+			: audioMode == 2 ? (asioDriver.empty() ? L"First ASIO driver" : asioDriver) : L"No device";
+		if (audioMode != 2 && outputDevice.empty()) dev = L"System default \x00B7 " + dev;
+		deviceButton = dropdown(dev, Hit::DeviceMenu);
+		y += 60;
+
+		// Mode: shared, exclusive or ASIO, as a dropdown like Output
+		rowLine();
+		g.text(L"Mode", { x, y + 11, w * 0.5f, 20 }, 14, Font::Ui, col::text);
+		g.text(audioMode == 2 ? L"Straight to the device's own driver"
+			: audioMode == 1 ? L"LossCat has the device to itself"
+			: L"Windows mixes LossCat with other apps",
+			{ x, y + 31, w * 0.6f, 18 }, 12, Font::Ui, col::dim);
+		const wchar_t* modes[] = { L"Shared", L"Exclusive", L"ASIO" };
+		modeButton = dropdown(modes[audioMode], Hit::ModeMenu);
+		y += 60;
+
+		// What the device is getting right now
+		rowLine();
+		g.text(L"Right now", { x, y + 11, 200, 20 }, 14, Font::Ui, col::text);
+		std::wstring status;
+		uint32_t statusCol = col::dim;
+		bool filled = false;
+		if (player.deviceSampleRate() == 0) status = L"Opens when a song plays";
+		else if (player.bitPerfect(current >= 0 ? queue[current].info.bitsPerSample : 0)) { status = L"Bit-perfect"; statusCol = col::white; filled = true; }
+		else if (current >= 0 && queue[current].info.sampleRate && queue[current].info.sampleRate != (int)player.deviceSampleRate())
+			status = L"Resampled from " + fmtRate(queue[current].info.sampleRate) + L" kHz";
+		else if ((player.exclusiveActive() || player.asioActive()) && volume < 0.9999f) status = L"Not bit-perfect: volume below 100%";
+		else if (player.exclusiveActive() || player.asioActive()) status = L"Converted, not bit-perfect";
+		else if (current >= 0) status = L"Mixed by Windows";
+		std::wstring sub = !player.exclusiveProblem().empty() && audioMode != 0 ? widen(player.exclusiveProblem()) : status;
+		if (filled) g.circle(x + 4, y + 40, 3.5f, statusCol);
+		else if (player.deviceSampleRate()) g.circle(x + 4, y + 40, 3, col::dim, false, 1);
+		g.text(sub, { x + (player.deviceSampleRate() ? 14.0f : 0.0f), y + 31, w * 0.5f, 18 }, 12, Font::Ui, statusCol);
+		if (player.deviceSampleRate())
+		{
+			std::vector<std::wstring> chips;
+			chips.push_back(player.asioActive() ? L"ASIO" : player.exclusiveActive() ? L"Exclusive" : L"Shared");
+			chips.push_back(fmtRate((int)player.deviceSampleRate()) + L" kHz");
+			switch (player.deviceFormat())
+			{
+			case ma_format_s16: chips.push_back(L"16-bit"); break;
+			case ma_format_s24: chips.push_back(L"24-bit"); break;
+			case ma_format_s32: chips.push_back(L"32-bit"); break;
+			case ma_format_f32: chips.push_back(L"32-bit float"); break;
+			default: break;
+			}
+			// A 24-bit file in a 32-bit slot is still exact: the low 8 bits are just zeros. Say so.
+			int fileBits = current >= 0 ? queue[current].info.bitsPerSample : 0;
+			if (player.bitPerfect(fileBits) && fileBits && (player.deviceFormat() == ma_format_s32 && fileBits < 32))
+				chips.back() = std::to_wstring(fileBits) + L"-bit in 32";
+			ma_uint32 chn = player.deviceChannels();
+			chips.push_back(chn == 2 ? L"Stereo" : chn == 1 ? L"Mono" : std::to_wstring(chn) + L" channels");
+			std::wstring joined;
+			for (size_t k = 0; k < chips.size(); ++k) joined += (k ? L" \x00B7 " : L"") + chips[k];
+			g.text(joined, { x + w * 0.4f, y, w * 0.6f, 60 }, 13, Font::Ui, col::soft, Align::Right);
+		}
+		y += 60;
+		if (audioMode == 1 && !player.exclusiveProblem().empty() && !player.exclusiveAttempts().empty())
+		{
+			// what was tried, so a device that won't cooperate can be diagnosed
+			float h = g.textBlock(L"Tried: " + widen(player.exclusiveAttempts()), { x, y, w, 0 }, 11, Font::Mono, col::muted, 4, 16);
+			y += h + 10;
+		}
+		g.line(x, y - 0.5f, x + w, y - 0.5f, col::line, 1);
+		y += 30;
+	}
 
 	section(L"Library");
 	{
@@ -1757,9 +1939,9 @@ void App::drawSettings(const Rect& a)
 			g.line(x, y + 0.5f, x + w, y + 0.5f, col::line, 1);
 			g.text(title, { x, y + 11, w - 260, 20 }, 14, Font::Ui, col::text);
 			std::wstring sub = note.empty() ? path : path + L"  \x00B7  " + note;
-			g.text(sub, { x, y + 31, w - 260, 18 }, 12, Font::Mono, col::dim);
+			g.text(sub, { x, y + 31, w - 260, 18 }, 12, Font::Ui, col::dim);
 		};
-		std::wstring note = moving ? L"moving\x2026 " + std::to_wstring(moveDone) + L" of " + std::to_wstring(moveTotal) + L" files" : L"imports and playlists live here";
+		std::wstring note = moving ? L"moving\x2026 " + std::to_wstring(moveDone) + L" of " + std::to_wstring(moveTotal) + L" files" : L"";
 		folderRow(L"LossCat folder", libraryDir.empty() ? L"Not found" : libraryDir, note);
 		float bx = x + w;
 		if (!moving) smallButton(bx, L"Change\x2026", Hit::ChangeLibraryFolder, -1);
@@ -1770,7 +1952,7 @@ void App::drawSettings(const Rect& a)
 			const std::wstring& f = musicFolders[i];
 			std::wstring name = f.substr(f.find_last_of(L'\\') + 1);
 			bool there = GetFileAttributesW(f.c_str()) != INVALID_FILE_ATTRIBUTES;
-			folderRow(name.empty() ? f : name, f, there ? L"scanned in place" : L"not found right now");
+			folderRow(name.empty() ? f : name, f, there ? L"" : L"not found right now");
 			bx = x + w;
 			smallButton(bx, L"Remove", Hit::RemoveMusicFolder, i);
 			if (there) smallButton(bx, L"Open", Hit::OpenMusicFolder, i);
@@ -1782,13 +1964,19 @@ void App::drawSettings(const Rect& a)
 		else
 		{
 			wchar_t n[64];
-			swprintf(n, 64, libTracks.size() == 1 ? L"%zu song. Press F5 to rescan" : L"%zu songs. Press F5 to rescan", libTracks.size());
+			swprintf(n, 64, libTracks.size() == 1 ? L"%zu song in your library" : L"%zu songs in your library", libTracks.size());
 			status = n;
+			unsigned long long bytes = 0, secs = 0;
+			for (const Track& t : libTracks) { bytes += t.bytes; secs += t.info.durationMs / 1000; }
+			if (bytes) status += L" \x00B7 " + fmtSize(bytes);
+			if (secs >= 3600) status += L" \x00B7 " + std::to_wstring(secs / 3600) + L" h " + std::to_wstring(secs / 60 % 60) + L" min";
+			else if (secs) status += L" \x00B7 " + std::to_wstring(secs / 60) + L" min";
 		}
-		g.text(L"Add a folder to play your music where it is, without copying it.", { x, y + 11, w - 200, 20 }, 13, Font::Ui, col::soft);
+		g.text(L"Your library", { x, y + 11, w - 200, 20 }, 14, Font::Ui, col::text);
 		g.text(status, { x, y + 31, w - 200, 18 }, 12, Font::Ui, col::dim);
 		bx = x + w;
 		smallButton(bx, L"Add folder\x2026", Hit::AddMusicFolder, -1);
+		if (!scanning) smallButton(bx, L"Rescan", Hit::Rescan, -1);
 		y += 60;
 		if (!hiddenFiles.empty())
 		{
@@ -1823,8 +2011,8 @@ void App::drawSettings(const Rect& a)
 		g.icon(icons::cat, logo, col::text, true);
 		g.icon(icons::catTail, logo, col::text, false, 1.8f);
 		g.text(L"LossCat", { x + 36, y + 11, 300, 20 }, 14, Font::UiMedium, col::text);
-		g.text(L"Version 0.2.1, \u00A9 2026 SegCat", { x + 36, y + 31, 400, 18 }, 12, Font::Ui, col::dim);
-		link(L"MIT License", L"license:201|LossCat", x + w, y + 20);
+		g.text(L"Version 0.2.2, \u00A9 2026 SegCat", { x + 36, y + 31, 400, 18 }, 12, Font::Ui, col::dim);
+		link(L"GPLv3 License", L"license:201|LossCat", x + w, y + 20);
 		y += 60;
 	}
 	g.line(x, y - 0.5f, x + w, y - 0.5f, col::line, 1);
@@ -1837,6 +2025,7 @@ void App::drawSettings(const Rect& a)
 		{ L"TagLib", L"Tags, audio properties and cover art", L"LGPL 2.1 or MPL 1.1", L"https://github.com/taglib/taglib", L"license:203|TagLib" },
 		{ L"zlib", L"Compression, used by TagLib", L"zlib License", L"https://zlib.net", L"license:204|zlib" },
 		{ L"UTF8-CPP", L"Text encoding, used by TagLib", L"Boost Software License 1.0", L"https://github.com/nemtrif/utfcpp", L"license:205|UTF8-CPP" },
+		{ L"ASIO SDK", L"ASIO output, by Steinberg. ASIO is a trademark of Steinberg Media Technologies GmbH", L"GPLv3", L"https://www.steinberg.net/developers/", L"license:206|ASIO SDK" },
 	};
 	for (const Credit& c : credits)
 	{
@@ -2040,10 +2229,10 @@ void App::drawMenu()
 		if (tw > w) w = tw;
 		h += itemH(m);
 	}
-	w += 24 + 8;
+	w += 24 + 8 + 24;
 	if (w < 200) w = 200;
-	float x = menuX + w > W - 8 ? menuX - w : menuX;
-	float y = menuY + h > H - 8 ? menuY - h : menuY;
+	float x = menuLeft || menuX + w > W - 8 ? menuX - w : menuX;
+	float y = menuUp || menuY + h > H - 8 ? menuY - h : menuY;
 	Rect r{ x, y, w, h };
 	g.fill({ r.x, r.y + 2, r.w, r.h }, 0x000000, 6, 0.35f);
 	g.fill(r, 0x222222, 6);
@@ -2075,7 +2264,8 @@ void App::drawMenu()
 			iy += 32 + 9;
 			continue;
 		}
-		g.text(m.label, { it.x + 12, it.y, it.w - 24, it.h }, 13, Font::Ui, m.danger ? 0xE5584F : col::text);
+		g.text(m.label, { it.x + 12, it.y, it.w - 40, it.h }, 13, Font::Ui, m.danger ? 0xE5584F : col::text);
+		if (m.checked) g.icon(icons::check, { it.right() - 26, it.cy() - 8, 16, 16 }, col::white, false, 1.8f);
 		hot(it, Hit::MenuItem, i);
 		iy += 32;
 	}
@@ -2166,7 +2356,7 @@ void App::drawPlayerBar()
 
 		// the signal path in one line: the file's format, then what the device gets
 		// Quiet plain text: "FLAC · 24-bit · 44.1 kHz", the rate showing "96 → 48 kHz" when resampled,
-		// in quiet plain text.
+		// and a small dot when the device gets the file untouched.
 		float py = cy + 13;
 		const TrackInfo& fi = t.info;
 		std::wstring line = codecOf(t.path);
@@ -2174,10 +2364,17 @@ void App::drawPlayerBar()
 		int outRate = (int)player.outputSampleRate();
 		if (fi.sampleRate)
 			line += L" \x00B7 " + (outRate && outRate != fi.sampleRate ? fmtRate(fi.sampleRate) + L" \x2192 " + fmtRate(outRate) : fmtRate(fi.sampleRate)) + L" kHz";
+		bool perfect = player.bitPerfect(fi.bitsPerSample);
 		bool sh = hovered(Hit::SignalPath);
 		float lw = g.textWidth(line, 11, Font::Ui);
 		g.text(line, { tx, py, tw, 15 }, 11, Font::Ui, sh ? col::soft : col::dim);
-		hot({ tx, py, std::min(tw, lw), 15 }, Hit::SignalPath);
+		float used = lw;
+		if (perfect && lw + 16 < tw)
+		{
+			g.circle(tx + lw + 8, py + 8, 2.5f, col::soft);
+			used += 12;
+		}
+		hot({ tx, py, std::min(tw, used), 15 }, Hit::SignalPath);
 	}
 	else
 	{
@@ -2213,6 +2410,8 @@ void App::drawPlayerBar()
 		x -= 18 + 8;
 
 		x -= 36;
+		barDeviceButton = ctlAt(x, Hit::BarDevice, icons::speaker, false, false);
+		x -= 2 + 36;
 		ctlAt(x, Hit::QueueButton, icons::queue, false, queueOpen);
 		x -= 9;
 		g.line(x + 0.5f, cy - 12, x + 0.5f, cy + 12, col::line, 1);

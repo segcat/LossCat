@@ -7,3 +7,4 @@
 #define IDR_LICENSE_TAGLIB    203
 #define IDR_LICENSE_ZLIB      204
 #define IDR_LICENSE_UTFCPP    205
+#define IDR_LICENSE_ASIO      206

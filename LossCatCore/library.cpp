@@ -15,7 +15,9 @@ int Library::addTrack(const std::filesystem::path& p)
     }
     info.coverData.clear();
     info.coverData.shrink_to_fit();
-    list.push_back({ pathUtf8, info });
+    std::error_code ec;
+    unsigned long long bytes = std::filesystem::file_size(p, ec);
+    list.push_back({ pathUtf8, info, ec ? 0ull : bytes });
     return (int)list.size() - 1;
 }
 namespace
@@ -172,7 +174,7 @@ bool Library::open(const std::string& rootUtf8In,
     }
 
     std::map<std::string, CachedTags> cache = loadCache(cachePathUtf8);
-    std::map<std::string, CachedTags> seen;  
+    std::map<std::string, CachedTags> seen;   // becomes the new cache, so deleted files drop out of it
     int looked = 0;
 
     std::vector<std::string> roots{ rootUtf8 };
@@ -218,7 +220,7 @@ bool Library::open(const std::string& rootUtf8In,
             {
                 continue;
             }
-            list.push_back({ pathUtf8, entry.info });
+            list.push_back({ pathUtf8, entry.info, (unsigned long long)entry.size });
             seen[pathUtf8] = std::move(entry);
         }
     }
