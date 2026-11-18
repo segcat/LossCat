@@ -130,7 +130,7 @@ double nowMs()
 bool App::animating() const
 {
 	double now = nowMs();
-	return (navStart > 0 && now - navStart < 700) || (queueStart > 0 && now - queueStart < 320);
+	return scrollMoving || (navStart > 0 && now - navStart < 700) || (queueStart > 0 && now - queueStart < 320);
 }
 
 void App::animValues(float& geo, float& labels, float& q) const
@@ -199,6 +199,7 @@ void App::layout()
 void App::paint()
 {
 	layout();
+	stepScroll();
 	if (!g.begin()) return;
 	++frameNo;
 	hots.clear();
@@ -215,6 +216,14 @@ void App::paint()
 	if (confirmOpen) drawConfirm();
 	g.end();
 	trimCovers();   // blocks until the next vsync, so this paces animation frames to the display
+
+	// Content moved under a still mouse (scrolling, a page change): hover follows what's under it now.
+	if (tracking && !dragging && !selectingLyrics)
+	{
+		int idx = -1;
+		Hit h = hitAt(mouseX, mouseY, &idx);
+		if (h != hoverHit || idx != hoverIndex) { hoverHit = h; hoverIndex = idx; InvalidateRect(hwnd, nullptr, FALSE); }
+	}
 
 	// Sliding text only needs ~30 frames a second, so it gets a timer rather than every vsync.
 	if (marqueeActive != marqueeTimer)
@@ -1767,7 +1776,7 @@ void App::drawSettings(const Rect& a)
 		g.icon(icons::cat, logo, col::text, true);
 		g.icon(icons::catTail, logo, col::text, false, 1.8f);
 		g.text(L"LossCat", { x + 36, y + 11, 300, 20 }, 14, Font::UiMedium, col::text);
-		g.text(L"Version 0.2.0, \u00A9 2026 SegCat", { x + 36, y + 31, 400, 18 }, 12, Font::Ui, col::dim);
+		g.text(L"Version 0.2.1, \u00A9 2026 SegCat", { x + 36, y + 31, 400, 18 }, 12, Font::Ui, col::dim);
 		link(L"MIT License", L"license:201|LossCat", x + w, y + 20);
 		y += 60;
 	}
@@ -1970,59 +1979,57 @@ void App::drawConfirm()
 
 void App::drawPlayerBar()
 {
+	// A floating card: cover and song on the left, controls and seek bar in the middle,
+	// queue and volume on the right.
 	const Rect& b = playerBar;
-	float cy = b.cy();
-	float left = 26, right = W - 20;
+	Rect card{ 8, b.y + 8, W - 16, b.h - 16 };
+	g.fill(card, col::panel, 10);
+	g.stroke(card, col::line, 10);
+	hot(card, Hit::Panel);
+	float cy = card.cy();
 	bool showRight = W >= 900;
-	float total = right - left - (showRight ? 56 : 28);
-	float unit = total / (showRight ? 3.3f : 2.3f);
-	Rect colL{ left, b.y, unit, b.h };
-	Rect colC{ colL.right() + 28, b.y, unit * 1.3f, b.h };
-	Rect colR{ colC.right() + 28, b.y, unit, b.h };
+	float centerW = W * 0.4f;
+	if (centerW > 520) centerW = 520;
+	if (!showRight) centerW = W * 0.45f;
+	Rect colC{ card.cx() - centerW / 2, card.y, centerW, card.h };
 	bool hasTrack = current >= 0;
 	State st = player.getState();
 
-	// left: cover, title, artist, signal path
-	Rect cv{ left, cy - 24, 48, 48 };
-	if (ID2D1Bitmap* bmp = currentCover()) g.image(bmp, cv, 4);
-	else g.fill(cv, hasTrack ? col::tile : 0x1A1A1A, 4);
-	g.stroke(cv, col::track, 4, 1);
+	// left: cover, title with the heart, artist, format
+	Rect cv{ card.x + 8, cy - 32, 64, 64 };
+	if (ID2D1Bitmap* bmp = currentCover()) g.image(bmp, cv, 6);
+	else g.fill(cv, hasTrack ? col::tile : 0x222222, 6);
 	hot(cv, Hit::Cover);
-	float tx = cv.right() + 14, tw = colL.right() - tx;
+	float tx = cv.right() + 14, tw = colC.x - 24 - tx;
 	if (hasTrack)
 	{
 		const Track& t = queue[current];
-		tw -= 64;
-		bool fav = inPlaylist(0, t.path);
-		Rect heart{ colL.right() - 60, cy - 30, 28, 28 };
-		Rect add{ colL.right() - 30, cy - 30, 28, 28 };
-		if (hovered(Hit::BarFavourite)) g.fill(heart, col::ctlHover, 3);
-		if (hovered(Hit::BarAddTo)) g.fill(add, col::ctlHover, 3);
-		g.icon(icons::heart, { heart.cx() - 8, heart.cy() - 8, 16, 16 }, fav ? col::white : col::soft, fav, 1.6f);
-		g.icon(icons::plus, { add.cx() - 8, add.cy() - 8, 16, 16 }, col::soft, false, 1.8f);
-		hot(heart, Hit::BarFavourite);
-		hot(add, Hit::BarAddTo);
-		g.text(t.title, { tx, cy - 26, tw, 18 }, 14, Font::UiMedium, col::text);
-		std::wstring sub = t.album.empty() ? t.artist : t.artist + L", " + t.album;
-		g.text(sub, { tx, cy - 7, tw, 16 }, 12, Font::Ui, col::dim);
-		// mini signal path
-		float px = tx, py = cy + 10;
-		auto box = [&](const std::wstring& s) {
-			float w = g.textWidth(s, 11, Font::Mono) + 12;
-			Rect r{ px, py, w, 18 };
-			g.stroke(r, hovered(Hit::SignalPath) ? 0x5A5A5A : col::tile, 2);
-			g.text(s, r, 11, Font::Mono, col::text, Align::Center);
-			px += w + 6;
-		};
-		box(signalSource());
-		g.text(L"→", { px, py, 12, 18 }, 11, Font::Mono, col::dim);
-		px += 18;
-		box(signalOutput());
+		bool canFav = inLibrary(t.path);
+		float titleW = g.textWidth(t.title, 15, Font::UiMedium);
+		float maxTitle = tw - (canFav ? 30 : 0);
+		if (titleW > maxTitle) titleW = maxTitle;
+		g.text(t.title, { tx, cy - 28, titleW + 2, 20 }, 15, Font::UiMedium, col::text);
+		if (canFav)
+		{
+			bool fav = inPlaylist(0, t.path);
+			Rect heart{ tx + titleW + 6, cy - 30, 24, 24 };
+			if (hovered(Hit::BarFavourite)) g.fill(heart, col::ctlHover, 12);
+			g.icon(icons::heart, { heart.cx() - 7, heart.cy() - 7, 14, 14 }, fav ? col::text : col::soft, fav, 1.6f);
+			hot(heart, Hit::BarFavourite);
+		}
+		g.text(t.artist, { tx, cy - 8, tw, 16 }, 12, Font::Ui, col::dim);
+
+		// the signal path in one line: the file's format, then what the device gets
+		float py = cy + 12;
+		std::wstring src = signalSource();
+		float chipW = g.textWidth(src, 10, Font::Mono) + 12;
+		Rect chip{ tx, py, chipW, 17 };
+		g.stroke(chip, hovered(Hit::SignalPath) ? 0x5A5A5A : col::chip, 3);
+		g.text(src, chip, 10, Font::Mono, col::soft, Align::Center);
 		bool same = t.info.sampleRate == (int)player.outputSampleRate();
-		if (same) g.circle(px + 4, py + 9, 3.5f, col::white);
-		else g.circle(px + 4, py + 9, 3, col::dim, false, 1);
-		g.text(same ? L"No resampling" : L"Resampled", { px + 14, py, 120, 18 }, 11, Font::Mono, same ? col::text : col::dim);
-		hot({ tx, py, px + 110 - tx, 18 }, Hit::SignalPath);
+		std::wstring out = L"\x2192 " + signalOutput() + (same ? L", not resampled" : L", resampled");
+		g.text(out, { chip.right() + 6, py, tx + tw - chip.right() - 6, 17 }, 10, Font::Mono, col::dim);
+		hot({ tx, py, std::min(tw, chipW + 6 + g.textWidth(out, 10, Font::Mono)), 17 }, Hit::SignalPath);
 	}
 	else
 	{
@@ -2030,82 +2037,82 @@ void App::drawPlayerBar()
 		g.text(L"Drop files on the window to start", { tx, cy + 2, tw, 16 }, 12, Font::Ui, col::muted);
 	}
 
-	// centre: controls
-	float rowY = cy - 14;
-	float ctlW = 36 * 4 + 42 + 14 * 4;
+	// centre: controls, seek bar under them
+	float rowY = cy - 12;
+	float ctlW = 36 * 4 + 40 + 12 * 4;
 	float x = colC.cx() - ctlW / 2;
-	auto ctl = [&](Hit id, const char* icon, bool filled, bool active, bool dot) {
+	auto ctl = [&](Hit id, const char* icon, bool filled, bool active) {
 		Rect r{ x, rowY - 18, 36, 36 };
-		if (hovered(id)) g.fill(r, col::ctlHover, 3);
+		if (active) g.fill(r, hovered(id) ? 0x333333 : col::ctlHover, 18);
+		else if (hovered(id)) g.fill(r, col::ctlHover, 18);
 		uint32_t c = active ? col::white : hovered(id) ? col::text : col::soft;
-		g.icon(icon, { r.cx() - 9, r.cy() - 9, 18, 18 }, c, filled, 1.6f);
-		if (dot) g.circle(r.cx(), r.bottom() - 5, 2, col::white);
+		g.icon(icon, { r.cx() - 8, r.cy() - 8, 16, 16 }, c, filled, 1.6f);
 		hot(r, id);
-		x += 36 + 14;
+		x += 36 + 12;
 	};
-	ctl(Hit::Shuffle, icons::shuffle, false, shuffle, shuffle);
-	ctl(Hit::Prev, icons::prev, true, false, false);
+	ctl(Hit::Shuffle, icons::shuffle, false, shuffle);
+	ctl(Hit::Prev, icons::prev, true, false);
 	{
-		Rect r{ x, rowY - 21, 42, 42 };
-		g.circle(r.cx(), r.cy(), 21, hovered(Hit::Play) ? col::white : col::text);
+		Rect r{ x, rowY - 20, 40, 40 };
+		g.circle(r.cx(), r.cy(), 20, hovered(Hit::Play) ? col::white : col::text);
 		bool playing = st == State::Playing;
 		g.icon(playing ? icons::pause : icons::play, { r.cx() - 8, r.cy() - 8, 16, 16 }, 0x131313, true);
 		hot(r, Hit::Play);
-		x += 42 + 14;
+		x += 40 + 12;
 	}
-	ctl(Hit::Next, icons::next, true, false, false);
+	ctl(Hit::Next, icons::next, true, false);
 	{
 		float rx = x;
-		ctl(Hit::Repeat, icons::repeat, false, repeat != 0, repeat != 0);
-		if (repeat == 2) g.text(L"1", { rx + 24, rowY - 15, 8, 10 }, 9, Font::Mono, col::white);
+		ctl(Hit::Repeat, icons::repeat, false, repeat != 0);
+		if (repeat == 2) g.text(L"1", { rx + 23, rowY - 14, 8, 10 }, 9, Font::Mono, col::white);
 	}
 
-	// seek row
-	float sy = cy + 24;
-	float seekW = colC.w;
-	if (seekW > 560) seekW = 560;
-	float sx = colC.cx() - seekW / 2;
+	float sy = cy + 22;
 	double dur = hasTrack ? player.duration() : 0;
 	double pos = dragging && pressHit == Hit::Seek ? dragSeconds : hasTrack ? player.position() : 0;
-	g.text(fmtTime(pos), { sx, sy - 9, 34, 18 }, 11, Font::Mono, col::dim, Align::Right);
-	g.text(fmtTime(dur), { sx + seekW - 34, sy - 9, 34, 18 }, 11, Font::Mono, col::dim);
-	seekBar = { sx + 44, sy - 2, seekW - 88, 4 };
+	g.text(fmtTime(pos), { colC.x, sy - 9, 40, 18 }, 11, Font::Mono, col::dim, Align::Right);
+	g.text(fmtTime(dur), { colC.right() - 40, sy - 9, 40, 18 }, 11, Font::Mono, col::dim);
+	seekBar = { colC.x + 50, sy - 2, colC.w - 100, 4 };
 	g.fill(seekBar, col::track, 2);
-	float f = dur > 0 ? (float)(pos / dur) : 0;
-	f = clamp01(f);
+	float f = clamp01(dur > 0 ? (float)(pos / dur) : 0);
 	if (f > 0) g.fill({ seekBar.x, seekBar.y, seekBar.w * f, 4 }, col::text, 2);
-	if (hasTrack) g.circle(seekBar.x + seekBar.w * f, sy, 6, col::white);
-	hot({ seekBar.x - 6, sy - 10, seekBar.w + 12, 20 }, Hit::Seek);
+	if (hasTrack && (hovered(Hit::Seek) || (dragging && pressHit == Hit::Seek)))
+		g.circle(seekBar.x + seekBar.w * f, sy, 6, col::white);
+	hot({ seekBar.x - 6, sy - 9, seekBar.w + 12, 18 }, Hit::Seek);
 
 	if (!showRight) return;
 
-	// right: up next button, volume
-	float rx = colR.right();
-	volumeBar = { rx - 100, cy - 2, 100, 4 };
+	// right: queue button with what's next, volume
+	float rx = card.right() - 16;
+	volumeBar = { rx - 88, cy - 2, 88, 4 };
 	g.fill(volumeBar, col::track, 2);
 	g.fill({ volumeBar.x, volumeBar.y, volumeBar.w * volume, 4 }, col::text, 2);
 	if (hovered(Hit::Volume) || (dragging && pressHit == Hit::Volume))
 		g.circle(volumeBar.x + volumeBar.w * volume, cy, 6, col::white);
-	g.icon(volume <= 0.001f ? icons::mute : icons::volume, { volumeBar.x - 10 - 18, cy - 9, 18, 18 }, col::soft, false, 1.6f);
+	g.icon(volume <= 0.001f ? icons::mute : icons::volume, { volumeBar.x - 8 - 18, cy - 9, 18, 18 }, col::soft, false, 1.6f);
 	hot({ volumeBar.x - 6, cy - 12, volumeBar.w + 12, 24 }, Hit::Volume);
 
-	float dx = volumeBar.x - 10 - 18 - 16;
-	g.fill({ dx, cy - 18, 1, 36 }, 0x2B2B2B);
+	float qRight = volumeBar.x - 8 - 18 - 14;
+	std::wstring label;
 	if (W >= 1100)
 	{
 		std::vector<int> up = upcoming();
-		std::wstring nextTitle = current >= 0 && !up.empty() ? queue[up.front()].title : L"Nothing queued";
-		float textW = g.textWidth(nextTitle, 13, Font::Ui);
-		if (textW > 160) textW = 160;
-		if (textW < 50) textW = 50;
-		float bw = 8 + textW + 14 + 18 + 8;
-		Rect qb{ dx - 16 - bw, cy - 22, bw, 44 };
-		if (queueOpen) g.fill(qb, 0x272727, 4);
-		else if (hovered(Hit::QueueButton)) g.fill(qb, col::hover, 4);
-		g.text(L"Up next", { qb.x + 8, cy - 17, textW, 14 }, 11, Font::Ui, col::dim);
-		g.text(nextTitle, { qb.x + 8, cy - 1, textW, 18 }, 13, Font::Ui, col::text);
-		g.icon(icons::queue, { qb.right() - 8 - 18, cy - 9, 18, 18 }, queueOpen ? col::white : col::soft, false, 1.6f);
-		hot(qb, Hit::QueueButton);
-		g.fill({ qb.x - 16, cy - 18, 1, 36 }, 0x2B2B2B);
+		label = current >= 0 && !up.empty() ? queue[up.front()].title : L"";
 	}
+	float avail = qRight - (colC.right() + 24) - 18 - 30 - g.textWidth(L"Next: ", 12, Font::Ui);
+	float textW = label.empty() ? 0 : std::min(g.textWidth(label, 12, Font::Ui), std::min(180.0f, avail));
+	if (textW < 30) { textW = 0; label.clear(); }
+	float bw = label.empty() ? 36 : 12 + 18 + 8 + g.textWidth(L"Next: ", 12, Font::Ui) + textW + 12;
+	Rect qb{ qRight - bw, cy - 18, bw, 36 };
+	if (queueOpen) g.fill(qb, col::ctlHover, 18);
+	else if (hovered(Hit::QueueButton)) g.fill(qb, col::hover, 18);
+	float ix = label.empty() ? qb.cx() - 9 : qb.x + 12;
+	g.icon(icons::queue, { ix, cy - 9, 18, 18 }, queueOpen ? col::white : col::soft, false, 1.6f);
+	if (!label.empty())
+	{
+		float lx = ix + 18 + 8, nw = g.textWidth(L"Next: ", 12, Font::Ui);
+		g.text(L"Next: ", { lx, cy - 9, nw + 2, 18 }, 12, Font::Ui, col::dim);
+		g.text(label, { lx + nw, cy - 9, textW + 2, 18 }, 12, Font::Ui, col::text);
+	}
+	hot(qb, Hit::QueueButton);
 }

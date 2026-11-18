@@ -334,6 +334,14 @@ private:
 	double dragSeconds = 0;
 	float mouseX = -1, mouseY = -1;
 	bool tracking = false;
+
+	// Smooth scrolling: the wheel moves a target, and each frame eases the real value toward it.
+	struct Smooth { float* value; float target; float last; };
+	std::vector<Smooth> smooths;
+	double lastScrollFrame = 0;
+	bool scrollMoving = false;
+	void wheelScroll(float& value, float max, float delta, bool precise);
+	void stepScroll();
 	UINT timerMs = 0;
 
 	// layout, in DIPs

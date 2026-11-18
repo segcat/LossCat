@@ -9,6 +9,7 @@
 #include <shobjidl.h>
 #include <knownfolders.h>
 #include <cstdlib>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <iterator>
@@ -128,6 +129,8 @@ bool App::create(HINSTANCE inst, int show)
 	if (audioOk) player.setVolume(volume);
 	else error = L"No audio output device";
 
+	for (float* v : { &pageScroll, &listScroll, &sideScroll, &lyricScroll, &nowAlbumScroll })
+		smooths.push_back({ v, *v, *v });
 	loadState();   // also opens the library
 
 	ShowWindow(hwnd, show);
@@ -387,42 +390,14 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 			POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
 			float x, y;
 			toClient(pt, x, y);
-			float step = GET_WHEEL_DELTA_WPARAM(wp) / 120.0f * 90.0f;
-			if (sideList.contains(x, y))
-			{
-				sideScroll -= step;
-				if (sideScroll < 0) sideScroll = 0;
-				if (sideScroll > sideMaxScroll) sideScroll = sideMaxScroll;
-				InvalidateRect(hwnd, nullptr, FALSE);
-			}
-			else if (page == Page::Now && npTab == 1 && nowAlbumArea.contains(x, y))
-			{
-				nowAlbumScroll -= step;
-				if (nowAlbumScroll < 0) nowAlbumScroll = 0;
-				if (nowAlbumScroll > nowAlbumMaxScroll) nowAlbumScroll = nowAlbumMaxScroll;
-				InvalidateRect(hwnd, nullptr, FALSE);
-			}
-			else if (page == Page::Now && npTab == 2 && lyricArea.contains(x, y))
-			{
-				lyricScroll -= step;
-				if (lyricScroll < 0) lyricScroll = 0;
-				if (lyricScroll > lyricMaxScroll) lyricScroll = lyricMaxScroll;
-				InvalidateRect(hwnd, nullptr, FALSE);
-			}
-			else if (listArea.contains(x, y))
-			{
-				listScroll -= step;
-				if (listScroll < 0) listScroll = 0;
-				if (listScroll > listMaxScroll) listScroll = listMaxScroll;
-				InvalidateRect(hwnd, nullptr, FALSE);
-			}
-			else if (pageArea.contains(x, y))
-			{
-				pageScroll -= step;
-				if (pageScroll < 0) pageScroll = 0;
-				if (pageScroll > pageMaxScroll) pageScroll = pageMaxScroll;
-				InvalidateRect(hwnd, nullptr, FALSE);
-			}
+			int delta = GET_WHEEL_DELTA_WPARAM(wp);
+			float step = delta / 120.0f * 90.0f;
+			bool precise = delta % 120 != 0;   // touchpads send small steps; follow them directly
+			if (sideList.contains(x, y)) wheelScroll(sideScroll, sideMaxScroll, step, precise);
+			else if (page == Page::Now && npTab == 1 && nowAlbumArea.contains(x, y)) wheelScroll(nowAlbumScroll, nowAlbumMaxScroll, step, precise);
+			else if (page == Page::Now && npTab == 2 && lyricArea.contains(x, y)) wheelScroll(lyricScroll, lyricMaxScroll, step, precise);
+			else if (listArea.contains(x, y)) wheelScroll(listScroll, listMaxScroll, step, precise);
+			else if (pageArea.contains(x, y)) wheelScroll(pageScroll, pageMaxScroll, step, precise);
 			return 0;
 		}
 		if (hoverHit == Hit::Volume)
@@ -1806,6 +1781,40 @@ void App::loadLyricsFile()
 	MultiByteToWideChar(cp, 0, bytes.data(), (int)bytes.size(), &text[0], n);
 	if (text.find_first_not_of(L" \t\r\n") == std::wstring::npos) { notice = L"That file is empty"; InvalidateRect(hwnd, nullptr, FALSE); return; }
 	saveLyrics(text);
+}
+
+void App::wheelScroll(float& value, float max, float delta, bool precise)
+{
+	for (Smooth& s : smooths)
+	{
+		if (s.value != &value) continue;
+		bool moving = std::fabs(s.target - value) > 0.5f && s.last == value;
+		float t = (moving ? s.target : value) - delta;   // keep adding to a scroll in flight
+		t = t < 0 ? 0 : t > max ? max : t;
+		s.target = t;
+		if (precise) { value = t; s.last = t; }
+		lastScrollFrame = nowMs();
+		InvalidateRect(hwnd, nullptr, FALSE);
+		return;
+	}
+}
+
+void App::stepScroll()
+{
+	double now = nowMs();
+	float dt = (float)(now - lastScrollFrame);
+	if (dt > 50) dt = 50;   // first frame after a pause
+	lastScrollFrame = now;
+	scrollMoving = false;
+	float k = 1 - std::exp(-dt / 65.0f);
+	for (Smooth& s : smooths)
+	{
+		if (*s.value != s.last) s.target = *s.value;   // set elsewhere (page change, clamping, scrollbar drag)
+		float d = s.target - *s.value;
+		if (std::fabs(d) < 0.5f) *s.value = s.target;
+		else { *s.value += d * k; scrollMoving = true; }
+		s.last = *s.value;
+	}
 }
 
 bool App::busyImporting()
