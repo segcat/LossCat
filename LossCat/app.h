@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 #include <random>
+#include <thread>
+#include <atomic>
 
 // Everything that can be clicked. Drawing registers a rectangle for each one every
 // frame; mouse handling and WM_NCHITTEST look them up from the last frame.
@@ -38,9 +40,12 @@ enum class Hit
 	RowHeart,
 	Link,            // + index into links
 	Back,
+	CancelImport,
+	TilePlay,        // play button on a hovered album tile
+	GroupBack, GroupPlay, GroupShuffle, AlbumRow, AlbumCover, AlbumArtist, ArtistAlbum,
 };
 
-enum class Page { Home, Now, Library, Settings, Playlist, License };
+enum class Page { Home, Now, Library, Settings, Playlist, License, Album, Artist };
 
 struct Track
 {
@@ -96,6 +101,12 @@ private:
 	void drawQueuePanel();
 	void drawMenu();
 	void drawPlaylist(const Rect& area);
+	void drawAlbum(const Rect& area);
+	void drawArtist(const Rect& area);
+	void openAlbum(int album);
+	void openArtist(int artist);
+	int findAlbum() const;
+	int findArtist() const;
 	void drawSidebarPlaylists(float y);
 	void drawEditBox(const Rect& r, float size, Font f);
 	void drawConfirm();
@@ -115,6 +126,11 @@ private:
 	void playList(const std::vector<int>& libIndices, int start);
 	std::vector<std::wstring> pickFiles();
 	void importFiles(const std::vector<std::wstring>& files);
+	void finishImport();
+	void setAlbumCover(const std::vector<std::wstring>& paths);
+	void finishCover();
+	const Group* albumOf(const std::wstring& path) const;
+	bool busyImporting();
 	bool inLibrary(const std::wstring& path) const;
 	void openMenu(Hit target, int index, float x, float y);
 	void removeFromLibrary(const std::vector<std::wstring>& paths);
@@ -165,10 +181,14 @@ private:
 	Rect pageArea;
 	std::wstring notice;
 
-	enum class Act { Play, AddToLibrary, Remove, Favourite, Unfavourite, PlaylistMenu, AddTo, NewWith, RemoveFromPlaylist, PlayPlaylist, RenamePlaylist, DeletePlaylist };
+	enum class Act { Play, AddToLibrary, Remove, SetCover, Favourite, Unfavourite, PlaylistMenu, AddTo, NewWith, RemoveFromPlaylist, PlayPlaylist, RenamePlaylist, DeletePlaylist };
 	enum class Look { Item, Heading, Action };   // Action: icon, bold, line under it
 	struct MenuEntry { std::wstring label; Act act; bool danger; int arg = -1; Look look = Look::Item; };
 	bool menuOpen = false;
+	// Name shown beside a hovered playlist when the sidebar is collapsed.
+	std::wstring tipText;
+	float tipX = 0, tipY = 0;
+	void drawTip();
 	float menuX = 0, menuY = 0;
 	std::vector<MenuEntry> menu;
 	std::vector<std::wstring> menuPaths;
@@ -181,6 +201,10 @@ private:
 	Playlists pls;
 	Page lastPage = Page::Home;
 	int openPlaylist = -1;
+	// Album and artist pages hold names rather than indices, which shift when the library changes.
+	std::wstring albumName, albumArtist, artistName;
+	bool albumFromArtist = false;
+	std::vector<int> artistAlbums;
 	std::vector<Track> plTracks;
 	int plTracksFor = -1;
 	unsigned plVersion = 1, plTracksVersion = 0;
@@ -190,7 +214,25 @@ private:
 	Rect sideList;
 	std::vector<std::wstring> rowHeartPaths;
 	std::vector<std::wstring> links;   // URLs of the Link hits drawn this frame (or "license:<id>")
-	std::wstring licenseTitle, licenseText;   // song table hearts this frame, by row index
+	std::wstring licenseTitle, licenseText;
+
+	// Imports of more than one file run on a worker thread. While it runs, only the
+	// worker touches lib; the GUI keeps drawing from its own copies (libTracks).
+	struct ImportResult { std::wstring source; std::string copy; std::string error; };
+	std::thread importThread;
+	std::atomic<bool> importing{ false }, importCancel{ false };
+	std::atomic<int> importDone{ 0 };
+	int importTotal = 0;
+	std::vector<ImportResult> importResults;
+	// Writing a cover into every file of an album also runs on a worker thread.
+	std::thread coverThread;
+	std::atomic<bool> coverBusy{ false };
+	std::vector<std::wstring> coverPaths;
+	std::atomic<int> coverFailed{ 0 };
+	std::string coverError;
+	bool resumeAfterCover = false;
+	double resumeAt = 0;
+	std::wstring resumePath;   // song table hearts this frame, by row index
 	float listScroll = 0;
 	float listMaxScroll = 0;
 	Rect listArea;

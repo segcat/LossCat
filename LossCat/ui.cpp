@@ -176,12 +176,14 @@ void App::paint()
 	if (!g.begin()) return;
 	++frameNo;
 	hots.clear();
+	tipText.clear();
 	g.clear(col::base);
 	drawSidebar();
 	drawMain();
 	drawQueuePanel();
 	drawWindowControls({ 8, 8, W - 16, H - 104 });   // always in the window's top-right corner
 	drawPlayerBar();
+	if (!menuOpen && !confirmOpen) drawTip();
 	if (menuOpen) drawMenu();
 	if (confirmOpen) drawConfirm();
 	g.end();
@@ -348,6 +350,12 @@ void App::drawSidebarPlaylists(float y)
 			}
 		}
 		if (on && t >= 0.5f) g.stroke(tl.inset(-1), col::text, 5, 1);
+		if (hov && t > 0.95f && editPlaylist != i)
+		{
+			tipText = widen(pl.name);
+			tipX = tl.right() + 14;
+			tipY = tl.cy();
+		}
 
 		Rect label{ tl.right() + 6, ry, w - tile - 16 - 30, rowH };
 		if (editPlaylist == i && t < 0.5f && !(page == Page::Playlist && openPlaylist == i))
@@ -367,6 +375,17 @@ void App::drawSidebarPlaylists(float y)
 		if (bot > top && editPlaylist != i) hot({ hit.x, top, hit.w, bot - top }, Hit::PlaylistNav, i);
 	}
 	g.popClip();
+}
+
+void App::drawTip()
+{
+	if (tipText.empty()) return;
+	float tw = g.textWidth(tipText, 12, Font::UiMedium);
+	if (tw > 260) tw = 260;
+	Rect r{ tipX, tipY - 14, tw + 20, 28 };
+	g.fill(r, 0x2B2B2B, 4);
+	g.stroke(r, col::chip, 4);
+	g.text(tipText, { r.x + 10, r.y, tw, 28 }, 12, Font::UiMedium, col::text);
 }
 
 // ---------------------------------------------------------------- main panel
@@ -445,6 +464,8 @@ void App::drawMain()
 	case Page::Home: drawHome(area); break;
 	case Page::Library: drawLibrary(area); break;
 	case Page::Playlist: drawPlaylist(area); break;
+	case Page::Album: drawAlbum(area); break;
+	case Page::Artist: drawArtist(area); break;
 	case Page::License: drawLicense(area); break;
 	case Page::Now: drawNowPlaying(area); break;
 	case Page::Settings: drawSettings(area); break;
@@ -587,7 +608,7 @@ float App::drawTiles(const std::vector<Tile>& tiles, float x, float y, float w, 
 		const Tile& t = tiles[i];
 		Rect r{ x + (i % cols) * (tw + gap), y + (i / cols) * (th + (round ? 0 : gap)), tw, th };
 		if (r.bottom() < pageArea.y || r.y > pageArea.bottom()) continue;
-		bool hov = hovered(hit, i);
+		bool hov = hovered(hit, i) || ((hit == Hit::AlbumTile || hit == Hit::ArtistAlbum) && hovered(Hit::TilePlay, i));
 		if (hov && !round) g.fill(r, col::hover, 4);
 		Rect img{ r.x + pad, r.y + pad, tw - 2 * pad, tw - 2 * pad };
 		if (round)
@@ -622,17 +643,26 @@ float App::drawTiles(const std::vector<Tile>& tiles, float x, float y, float w, 
 				}
 			}
 			g.stroke(img, 0x313131, 2, 1, 0.6f);
-			if (t.playing)
+			if (hov && (hit == Hit::AlbumTile || hit == Hit::ArtistAlbum))
+			{
+				Rect pb{ img.right() - 44, img.bottom() - 44, 36, 36 };
+				bool ph = hovered(Hit::TilePlay, i);
+				g.circle(pb.cx(), pb.cy(), 18, ph ? 0xFFFFFF : col::text);
+				g.icon(icons::play, { pb.cx() - 7, pb.cy() - 7, 14, 14 }, 0x131313, true);
+			}
+			else if (t.playing)
 			{
 				Rect badge{ img.right() - 28, img.bottom() - 28, 20, 20 };
 				g.fill(badge, col::panel, 2);
 				g.icon(icons::play, { badge.cx() - 6, badge.cy() - 6, 12, 12 }, col::white, true);
 			}
 		}
+		hotVisible(r, hit, i);
+		if (hov && (hit == Hit::AlbumTile || hit == Hit::ArtistAlbum))
+			hotVisible({ img.right() - 44, img.bottom() - 44, 36, 36 }, Hit::TilePlay, i);
 		float ty = img.bottom() + 10;
 		g.text(t.title, { r.x + pad, ty, tw - 2 * pad, 18 }, 13, Font::UiMedium, t.playing ? col::white : col::text, round ? Align::Center : Align::Left);
 		if (!round) g.text(t.sub, { r.x + pad, ty + 18, tw - 2 * pad, 18 }, 13, Font::Ui, col::dim);
-		hotVisible(r, hit, i);
 	}
 	int rows = ((int)tiles.size() + cols - 1) / cols;
 	return rows * th + (rows - 1) * (round ? 0 : gap);
@@ -728,7 +758,21 @@ void App::drawLibrary(const Rect& a)
 	};
 	button(L"Import files", Hit::ImportFiles, true);
 	button(L"Rescan", Hit::Rescan, false);
-	if (!notice.empty()) g.text(notice, { tx + 12, y, bx - tx - 20, 30 }, 12, Font::Ui, col::dim, Align::Right);
+	if (importing)
+	{
+		float cw = g.textWidth(L"Cancel", 12, Font::Ui);
+		Rect cancel{ bx - cw, y + 5, cw, 20 };
+		g.text(L"Cancel", cancel, 12, Font::Ui, hovered(Hit::CancelImport) ? col::white : col::soft);
+		g.line(cancel.x, cancel.bottom() - 2.5f, cancel.right(), cancel.bottom() - 2.5f, hovered(Hit::CancelImport) ? col::white : 0x5A5A5A, 1);
+		hot(cancel.inset(-4), Hit::CancelImport);
+		std::wstring progress = importCancel ? L"Stopping after this file\x2026"
+			: L"Importing " + std::to_wstring(importDone + 1 > importTotal ? importTotal : (int)importDone + 1) + L" of " + std::to_wstring(importTotal) + L"\x2026";
+		g.text(progress, { tx + 12, y, cancel.x - 12 - tx - 12, 30 }, 12, Font::Ui, col::dim, Align::Right);
+		float barW = 120, done = importTotal ? (float)importDone / importTotal : 0;
+		g.fill({ cancel.x - 12 - barW, y + 27, barW, 2 }, col::track, 1);
+		g.fill({ cancel.x - 12 - barW, y + 27, barW * done, 2 }, col::text, 1);
+	}
+	else if (!notice.empty()) g.text(notice, { tx + 12, y, bx - tx - 20, 30 }, 12, Font::Ui, col::dim, Align::Right);
 	y += 30 + 22;
 
 	Rect body{ a.x, y, a.w, a.bottom() - y };
@@ -870,6 +914,168 @@ void App::drawPlaylist(const Rect& a)
 		return;
 	}
 	drawTrackRows({ a.x, y, a.w, a.bottom() - y }, list, Hit::PlaylistRow);
+}
+
+namespace
+{
+	std::wstring songsAndMinutes(size_t songs, int secs)
+	{
+		std::wstring s = songs == 1 ? L"1 song" : std::to_wstring(songs) + L" songs";
+		int min = (secs + 59) / 60;
+		if (min >= 60) return s + L", " + std::to_wstring(min / 60) + L" h " + std::to_wstring(min % 60) + L" min";
+		return s + L", " + std::to_wstring(min) + L" min";
+	}
+}
+
+void App::drawAlbum(const Rect& a)
+{
+	listArea = {};
+	int al = findAlbum();
+	if (al < 0) { page = Page::Library; return; }
+	const Group& grp = albums[al];
+	float x = a.x + 6, y = a.y;
+
+	std::wstring backLabel = albumFromArtist && findArtist() >= 0 ? artistName : L"Library";
+	float bw = g.textWidth(backLabel, 13, Font::UiMedium) + 40;
+	if (bw > 260) bw = 260;
+	Rect back{ x, y, bw, 30 };
+	if (hovered(Hit::GroupBack)) g.fill(back, col::hover, 15);
+	g.stroke(back, col::chip, 15);
+	g.icon("M15 6l-6 6 6 6", { back.x + 10, back.cy() - 8, 16, 16 }, col::text, false, 1.8f);
+	g.text(backLabel, { back.x + 30, back.y, bw - 38, 30 }, 13, Font::UiMedium, col::text);
+	hot(back, Hit::GroupBack);
+	y += 30 + 22;
+
+	float cs = 180;
+	Rect cv{ x, y, cs, cs };
+	const std::wstring& first = libTracks[grp.tracks.front()].path;
+	ID2D1Bitmap* bmp = coverOf(first);
+	bool ch = hovered(Hit::AlbumCover) && !busyImporting();
+	if (bmp) g.image(bmp, cv, 3);
+	else
+	{
+		g.fill(cv, col::tile, 3);
+		g.icon(icons::note, { cv.cx() - 27, cv.cy() - 27, 54, 54 }, col::muted, false, 1.4f);
+	}
+	g.stroke(cv, 0x313131, 3, 1, 0.6f);
+	if (ch || (!bmp && !busyImporting()))
+	{
+		Rect lab{ cv.x, cv.bottom() - 34, cs, 34 };
+		if (ch) g.fill(cv, 0x000000, 3, 0.45f);
+		g.text(bmp ? L"Change cover" : L"Set cover", lab, 12, Font::UiMedium, ch ? col::white : col::soft, Align::Center);
+	}
+	if (!busyImporting()) hot(cv, Hit::AlbumCover);
+
+	float tx = cv.right() + 24, tw = a.right() - 6 - tx;
+	float ty = cv.bottom() - 30 - 18 - 20 - 24 - 34;
+	g.text(L"Album", { tx, ty, tw, 18 }, 12, Font::UiMedium, col::dim);
+	g.text(grp.name, { tx, ty + 18, tw, 34 }, 26, Font::UiMedium, col::text);
+	float aw = g.textWidth(grp.artist, 14, Font::UiMedium);
+	if (aw > tw) aw = tw;
+	Rect ar{ tx, ty + 18 + 34, aw, 22 };
+	bool ah = hovered(Hit::AlbumArtist);
+	g.text(grp.artist, ar, 14, Font::UiMedium, ah ? col::white : col::soft);
+	if (ah) g.line(ar.x, ar.bottom() - 2.5f, ar.right(), ar.bottom() - 2.5f, col::white, 1);
+	hot(ar, Hit::AlbumArtist);
+	int secs = 0;
+	for (int i : grp.tracks) secs += libTracks[i].info.durationMs / 1000;
+	std::wstring sub = songsAndMinutes(grp.tracks.size(), secs);
+	const TrackInfo& fi = libTracks[grp.tracks.front()].info;
+	if (fi.sampleRate)
+		sub += L"  \x00B7  " + codecOf(first) + L" " + (fi.bitsPerSample ? std::to_wstring(fi.bitsPerSample) + L"/" : L"") + fmtRate(fi.sampleRate);
+	g.text(sub, { tx, ty + 18 + 34 + 22, tw, 20 }, 13, Font::Ui, col::dim);
+
+	float px = tx, by = cv.bottom() - 30;
+	auto button = [&](const wchar_t* label, const char* icon, Hit id, bool primary) {
+		float w = 12 + 16 + 8 + g.textWidth(label, 13, Font::UiMedium) + 14;
+		Rect b{ px, by, w, 30 };
+		if (primary) g.fill(b, hovered(id) ? 0xFFFFFF : col::text, 15);
+		else { if (hovered(id)) g.fill(b, col::hover, 15); g.stroke(b, col::chip, 15); }
+		uint32_t fg = primary ? 0x131313 : col::text;
+		g.icon(icon, { b.x + 12, b.cy() - 8, 16, 16 }, fg, primary, 1.6f);
+		g.text(label, { b.x + 36, b.y, w - 40, 30 }, 13, Font::UiMedium, fg);
+		hot(b, id);
+		px += w + 8;
+	};
+	button(L"Play", icons::play, Hit::GroupPlay, true);
+	button(L"Shuffle", icons::shuffle, Hit::GroupShuffle, false);
+	if (!notice.empty()) g.text(notice, { px + 8, by, a.right() - px - 14, 30 }, 12, Font::Ui, col::dim);
+	y = cv.bottom() + 28;
+
+	std::vector<Track> list;
+	for (int i : grp.tracks) list.push_back(libTracks[i]);
+	drawTrackRows({ a.x, y, a.w, a.bottom() - y }, list, Hit::AlbumRow);
+}
+
+void App::drawArtist(const Rect& a)
+{
+	listArea = {};
+	int ai = findArtist();
+	if (ai < 0) { page = Page::Library; return; }
+	const Group& grp = artists[ai];
+	pageArea = a;
+	float x = a.x + 6;
+	g.pushClip(a);
+	float y = a.y - pageScroll;
+
+	float bw = g.textWidth(L"Library", 13, Font::UiMedium) + 40;
+	Rect back{ x, y, bw, 30 };
+	if (hovered(Hit::GroupBack)) g.fill(back, col::hover, 15);
+	g.stroke(back, col::chip, 15);
+	g.icon("M15 6l-6 6 6 6", { back.x + 10, back.cy() - 8, 16, 16 }, col::text, false, 1.8f);
+	g.text(L"Library", { back.x + 30, back.y, bw - 38, 30 }, 13, Font::UiMedium, col::text);
+	hotVisible(back, Hit::GroupBack, -1);
+	y += 30 + 22;
+
+	artistAlbums.clear();
+	for (int i = 0; i < (int)albums.size(); ++i)
+		if (_wcsicmp(albums[i].artist.c_str(), grp.name.c_str()) == 0) artistAlbums.push_back(i);
+
+	float cs = 140;
+	g.circle(x + cs / 2, y + cs / 2, cs / 2, 0x2E2E2E);
+	std::wstring initial = grp.name.empty() ? L"?" : grp.name.substr(0, 1);
+	g.text(initial, { x, y, cs, cs }, cs * 0.32f, Font::UiMedium, col::dim, Align::Center);
+	float tx = x + cs + 24, tw = a.right() - 6 - tx;
+	float ty = y + cs - 30 - 18 - 20 - 18 - 34;
+	g.text(L"Artist", { tx, ty, tw, 18 }, 12, Font::UiMedium, col::dim);
+	g.text(grp.name, { tx, ty + 18, tw, 34 }, 26, Font::UiMedium, col::text);
+	int secs = 0;
+	for (int i : grp.tracks) secs += libTracks[i].info.durationMs / 1000;
+	std::wstring sub = (artistAlbums.size() == 1 ? L"1 album, " : std::to_wstring(artistAlbums.size()) + L" albums, ") + songsAndMinutes(grp.tracks.size(), secs);
+	g.text(sub, { tx, ty + 18 + 34, tw, 20 }, 13, Font::Ui, col::dim);
+
+	float px = tx, by = y + cs - 30;
+	auto button = [&](const wchar_t* label, const char* icon, Hit id, bool primary) {
+		float w = 12 + 16 + 8 + g.textWidth(label, 13, Font::UiMedium) + 14;
+		Rect b{ px, by, w, 30 };
+		if (primary) g.fill(b, hovered(id) ? 0xFFFFFF : col::text, 15);
+		else { if (hovered(id)) g.fill(b, col::hover, 15); g.stroke(b, col::chip, 15); }
+		uint32_t fg = primary ? 0x131313 : col::text;
+		g.icon(icon, { b.x + 12, b.cy() - 8, 16, 16 }, fg, primary, 1.6f);
+		g.text(label, { b.x + 36, b.y, w - 40, 30 }, 13, Font::UiMedium, fg);
+		hotVisible(b, id, -1);
+		px += w + 8;
+	};
+	button(L"Play", icons::play, Hit::GroupPlay, true);
+	button(L"Shuffle", icons::shuffle, Hit::GroupShuffle, false);
+	y += cs + 30;
+
+	g.text(L"Albums", { x, y, 200, 24 }, 16, Font::UiMedium, col::text);
+	y += 24 + 12;
+	const std::wstring* playing = current >= 0 ? &queue[current].path : nullptr;
+	std::vector<Tile> tiles;
+	for (int k : artistAlbums)
+	{
+		const Group& al = albums[k];
+		bool on = false;
+		for (int i : al.tracks) if (playing && *playing == libTracks[i].path) on = true;
+		std::wstring s = al.tracks.size() == 1 ? L"1 song" : std::to_wstring(al.tracks.size()) + L" songs";
+		tiles.push_back({ al.name, s, libTracks[al.tracks.front()].path, on });
+	}
+	y += drawTiles(tiles, a.x, y, a.w, Hit::ArtistAlbum, false) + 24;
+	g.popClip();
+	pageMaxScroll = (y + pageScroll) - a.bottom();
+	if (pageMaxScroll < 0) pageMaxScroll = 0;
 }
 
 ID2D1Bitmap* App::currentCover()
@@ -1061,7 +1267,8 @@ void App::drawNowPlaying(const Rect& a)
 			const Track& q = queue[i];
 			Rect r{ x - 10, y, w + 10, 46 };
 			if (hovered(Hit::QueueRow, i)) g.fill(r, col::hover, 2);
-			g.fill({ x, y + 3, 40, 40 }, col::tile, 2);
+			if (ID2D1Bitmap* b = coverOf(q.path)) g.image(b, { x, y + 3, 40, 40 }, 2);
+			else g.fill({ x, y + 3, 40, 40 }, col::tile, 2);
 			g.text(q.title, { x + 52, y + 6, w - 52 - 56, 18 }, 13, Font::UiMedium, col::text);
 			g.text(q.artist, { x + 52, y + 24, w - 52 - 56, 16 }, 12, Font::Ui, col::soft);
 			g.text(fmtTime(q.info.durationMs / 1000.0), { x + w - 54, y, 44, 46 }, 12, Font::Mono, col::soft, Align::Right);
@@ -1250,7 +1457,8 @@ void App::drawQueuePanel()
 		Rect r{ x, y, w, 48 };
 		if (isCurrent) g.fill(r, col::selected, 3);
 		else if (hovered(Hit::QueueRow, i)) g.fill(r, col::hover, 3);
-		g.fill({ x + 6, y + 6, 36, 36 }, col::tile, 2);
+		if (ID2D1Bitmap* b = coverOf(t.path)) g.image(b, { x + 6, y + 6, 36, 36 }, 2);
+		else g.fill({ x + 6, y + 6, 36, 36 }, col::tile, 2);
 		float tx = x + 6 + 36 + 12, tw = w - (tx - x) - 52;
 		g.text(t.title, { tx, y + 7, tw, 18 }, 13, isCurrent ? Font::UiMedium : Font::Ui, isCurrent ? col::white : col::text);
 		g.text(t.artist, { tx, y + 25, tw, 16 }, 12, Font::Ui, col::dim);

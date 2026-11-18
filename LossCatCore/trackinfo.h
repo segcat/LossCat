@@ -32,3 +32,7 @@ struct TrackInfo
 };
 
 TrackInfo readTrackInfo(const std::string& path);
+
+// Embeds image (JPEG or PNG bytes) as the front cover, replacing any existing pictures.
+// Only the tags change; the audio data is untouched.
+bool writeCover(const std::string& path, const std::vector<unsigned char>& image, std::string& error);

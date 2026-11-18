@@ -8,6 +8,7 @@
 #include <shlobj.h>
 #include <knownfolders.h>
 #include <cstdlib>
+#include <cstdio>
 #include <iterator>
 #include <cwctype>
 #include <map>
@@ -25,6 +26,8 @@
 #define LC_DWMWA_WINDOW_CORNER_PREFERENCE 33
 #define LC_DWMWA_BORDER_COLOR 34
 #define LC_DWMWCP_ROUND 2
+#define WM_IMPORT_DONE (WM_APP + 1)
+#define WM_COVER_DONE (WM_APP + 2)
 
 static const wchar_t* kClassName = L"LossCat";
 static const UINT_PTR kTimer = 1;
@@ -32,15 +35,7 @@ static const UINT_PTR kTimer = 1;
 
 std::string fsPath(const std::wstring& path)
 {
-	wchar_t shortPath[MAX_PATH * 2];
-	DWORD n = GetShortPathNameW(path.c_str(), shortPath, (DWORD)std::size(shortPath));
-	const wchar_t* use = (n > 0 && n < std::size(shortPath)) ? shortPath : path.c_str();
-	BOOL lossy = FALSE;
-	int len = WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, use, -1, nullptr, 0, nullptr, &lossy);
-	if (len <= 0 || lossy) return narrow(path);
-	std::string out(len - 1, '\0');
-	WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, use, -1, out.data(), len, nullptr, nullptr);
-	return out;
+	return narrow(path);   // Core takes UTF-8 paths and opens them with the Unicode API
 }
 
 static std::wstring fileStem(const std::wstring& path)
@@ -482,7 +477,16 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 	case WM_TIMER:
 		tick();
 		return 0;
+	case WM_IMPORT_DONE:
+		finishImport();
+		return 0;
+	case WM_COVER_DONE:
+		finishCover();
+		return 0;
 	case WM_DESTROY:
+		importCancel = true;
+		if (importThread.joinable()) importThread.join();   // stops after the file it's copying
+		if (coverThread.joinable()) coverThread.join();
 		KillTimer(hwnd, kTimer);
 		player.uninit();
 		PostQuitMessage(0);
@@ -509,8 +513,46 @@ void App::click(Hit id, int index)
 	case Hit::LibTabAlbums: libTab = 0; pageScroll = 0; break;
 	case Hit::LibTabArtists: libTab = 1; pageScroll = 0; break;
 	case Hit::LibTabSongs: libTab = 2; pageScroll = 0; break;
-	case Hit::AlbumTile: if (index < (int)albums.size()) playList(albums[index].tracks, 0); break;
-	case Hit::ArtistTile: if (index < (int)artists.size()) playList(artists[index].tracks, 0); break;
+	case Hit::AlbumTile: albumFromArtist = false; openAlbum(index); break;
+	case Hit::ArtistTile: openArtist(index); break;
+	case Hit::ArtistAlbum: if (index >= 0 && index < (int)artistAlbums.size()) { albumFromArtist = true; openAlbum(artistAlbums[index]); } break;
+	case Hit::TilePlay:
+		if (page == Page::Artist && index >= 0 && index < (int)artistAlbums.size()) index = artistAlbums[index];
+		if (index >= 0 && index < (int)albums.size()) playList(albums[index].tracks, 0);
+		break;
+	case Hit::GroupBack:
+		if (page == Page::Album && albumFromArtist && findArtist() >= 0) page = Page::Artist;
+		else page = Page::Library;
+		pageScroll = 0;
+		break;
+	case Hit::GroupPlay:
+	case Hit::GroupShuffle:
+	{
+		int g2 = page == Page::Album ? findAlbum() : findArtist();
+		if (g2 < 0) break;
+		const Group& grp = page == Page::Album ? albums[g2] : artists[g2];
+		shuffle = id == Hit::GroupShuffle;
+		playList(grp.tracks, shuffle ? (int)(rng() % grp.tracks.size()) : 0);
+		break;
+	}
+	case Hit::AlbumRow: { int al = findAlbum(); if (al >= 0) playList(albums[al].tracks, index); break; }
+	case Hit::AlbumCover:
+	{
+		int al = findAlbum();
+		if (al < 0) break;
+		std::vector<std::wstring> paths;
+		for (int i : albums[al].tracks) paths.push_back(libTracks[i].path);
+		setAlbumCover(paths);
+		break;
+	}
+	case Hit::AlbumArtist:
+	{
+		int al = findAlbum();
+		if (al < 0) break;
+		for (int i = 0; i < (int)artists.size(); ++i)
+			if (_wcsicmp(artists[i].name.c_str(), albums[al].artist.c_str()) == 0) { openArtist(i); break; }
+		break;
+	}
 	case Hit::AddedTile: if (index < (int)recentlyAdded.size()) playFromLibrary(recentlyAdded[index]); break;
 	case Hit::RecentTile:
 		if (index < (int)recentPlayed.size())
@@ -532,6 +574,19 @@ void App::click(Hit id, int index)
 			{
 				fillChooser();
 				menuOpen = true;
+				break;
+			}
+			if (act == Act::SetCover)
+			{
+				// a song stands for its whole album
+				std::vector<std::wstring> album = paths;
+				if (paths.size() == 1)
+					if (const Group* g2 = albumOf(paths[0]))
+					{
+						album.clear();
+						for (int i : g2->tracks) album.push_back(libTracks[i].path);
+					}
+				setAlbumCover(album);
 				break;
 			}
 			if (act == Act::Favourite || act == Act::Unfavourite) { for (const auto& p : paths) toggleFavourite(p); break; }
@@ -648,6 +703,7 @@ void App::click(Hit id, int index)
 		}
 		break;
 	case Hit::Back: page = Page::Settings; pageScroll = 0; break;
+	case Hit::CancelImport: importCancel = true; break;
 	case Hit::RowHeart:
 		if (index >= 0 && index < (int)rowHeartPaths.size()) toggleFavourite(rowHeartPaths[index]);
 		break;
@@ -698,6 +754,7 @@ void App::click(Hit id, int index)
 
 void App::loadLibrary()
 {
+	if (busyImporting()) return;
 	PWSTR music = nullptr;
 	if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Music, 0, nullptr, &music)))
 	{
@@ -768,6 +825,37 @@ void App::playFromLibrary(int i)
 	playIndex(i);
 }
 
+void App::openAlbum(int album)
+{
+	if (album < 0 || album >= (int)albums.size()) return;
+	albumName = albums[album].name;
+	albumArtist = albums[album].artist;
+	page = Page::Album;
+	listScroll = 0;
+}
+
+void App::openArtist(int artist)
+{
+	if (artist < 0 || artist >= (int)artists.size()) return;
+	artistName = artists[artist].name;
+	page = Page::Artist;
+	pageScroll = 0;
+}
+
+int App::findAlbum() const
+{
+	for (int i = 0; i < (int)albums.size(); ++i)
+		if (_wcsicmp(albums[i].name.c_str(), albumName.c_str()) == 0 && _wcsicmp(albums[i].artist.c_str(), albumArtist.c_str()) == 0) return i;
+	return -1;
+}
+
+int App::findArtist() const
+{
+	for (int i = 0; i < (int)artists.size(); ++i)
+		if (_wcsicmp(artists[i].name.c_str(), artistName.c_str()) == 0) return i;
+	return -1;
+}
+
 void App::playList(const std::vector<int>& idx, int start)
 {
 	if (idx.empty()) return;
@@ -792,6 +880,7 @@ void App::openMenu(Hit target, int index, float x, float y)
 		switch (target)
 		{
 		case Hit::LibraryRow: return index < (int)libTracks.size() ? libTracks[index].path : L"";
+		case Hit::AlbumRow: { int al = findAlbum(); return al >= 0 && index < (int)albums[al].tracks.size() ? libTracks[albums[al].tracks[index]].path : L""; }
 		case Hit::AddedTile: return index < (int)recentlyAdded.size() ? libTracks[recentlyAdded[index]].path : L"";
 		case Hit::RecentTile: return index < (int)recentPlayed.size() ? recentPlayed[index] : L"";
 		case Hit::QueueRow: return index < (int)queue.size() ? queue[index].path : L"";
@@ -801,6 +890,8 @@ void App::openMenu(Hit target, int index, float x, float y)
 		}
 	};
 	if (target == Hit::PlaylistTile) target = Hit::PlaylistNav;
+	if (target == Hit::ArtistAlbum) { target = Hit::AlbumTile; index = index >= 0 && index < (int)artistAlbums.size() ? artistAlbums[index] : -1; }
+	if (target == Hit::TilePlay) return;
 	if (target == Hit::PlaylistNav)
 	{
 		const auto& all = pls.all();
@@ -826,6 +917,7 @@ void App::openMenu(Hit target, int index, float x, float y)
 	{
 		for (int i : group->tracks) menuPaths.push_back(libTracks[i].path);
 		menu.push_back({ target == Hit::AlbumTile ? L"Play album" : L"Play all songs", Act::Play, false });
+		if (target == Hit::AlbumTile) menu.push_back({ L"Set album cover\x2026", Act::SetCover, false });
 		menu.push_back({ L"Add to playlist\x2026", Act::PlaylistMenu, false });
 		menu.push_back({ target == Hit::AlbumTile ? L"Remove album from library" : L"Remove artist from library", Act::Remove, true });
 	}
@@ -840,6 +932,7 @@ void App::openMenu(Hit target, int index, float x, float y)
 			bool fav = inPlaylist(0, p);
 			menu.push_back({ fav ? L"Remove from Favourites" : L"Add to Favourites", fav ? Act::Unfavourite : Act::Favourite, false });
 			menu.push_back({ L"Add to playlist\x2026", Act::PlaylistMenu, false });
+			menu.push_back({ L"Set album cover\x2026", Act::SetCover, false });
 			if (target == Hit::PlaylistRow && menuPlaylist >= 0)
 				menu.push_back({ L"Remove from this playlist", Act::RemoveFromPlaylist, false });
 			menu.push_back({ L"Remove from library", Act::Remove, true });
@@ -979,6 +1072,7 @@ void App::openPlaylistChooser(const std::vector<std::wstring>& paths, float x, f
 bool App::ensureInLibrary(std::wstring& path)
 {
 	if (inLibrary(path)) return true;
+	if (busyImporting()) return false;
 	std::wstring original = path;
 	importFiles({ original });
 	if (current >= 0 && !queue.empty()) path = queue[current].path;
@@ -1017,7 +1111,7 @@ void App::playPlaylist(int p, int start, bool shuffled)
 
 void App::removeFromLibrary(const std::vector<std::wstring>& paths)
 {
-	if (paths.empty()) return;
+	if (paths.empty() || busyImporting()) return;
 	auto removing = [&](const std::wstring& p) { return std::find(paths.begin(), paths.end(), p) != paths.end(); };
 
 	if (current >= 0 && removing(queue[current].path))
@@ -1095,26 +1189,170 @@ void App::removeFromLibrary(const std::vector<std::wstring>& paths)
 	InvalidateRect(hwnd, nullptr, FALSE);
 }
 
+const Group* App::albumOf(const std::wstring& path) const
+{
+	for (const Group& al : albums)
+		for (int i : al.tracks)
+			if (libTracks[i].path == path) return &al;
+	return nullptr;
+}
+
+void App::setAlbumCover(const std::vector<std::wstring>& paths)
+{
+	if (paths.empty() || busyImporting()) return;
+	std::vector<wchar_t> buf(MAX_PATH * 4, L'\0');
+	OPENFILENAMEW ofn = { sizeof(ofn) };
+	ofn.hwndOwner = hwnd;
+	ofn.lpstrFilter = L"Images\0*.jpg;*.jpeg;*.png\0";
+	ofn.lpstrFile = buf.data();
+	ofn.nMaxFile = (DWORD)buf.size();
+	ofn.lpstrTitle = L"Choose a cover image";
+	ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST;
+	if (!GetOpenFileNameW(&ofn)) return;
+
+	std::vector<unsigned char> bytes;
+	FILE* f = nullptr;
+	if (_wfopen_s(&f, buf.data(), L"rb") == 0 && f)
+	{
+		fseek(f, 0, SEEK_END);
+		long n = ftell(f);
+		fseek(f, 0, SEEK_SET);
+		if (n > 0 && n < 64L * 1024 * 1024)
+		{
+			bytes.resize((size_t)n);
+			if (fread(bytes.data(), 1, bytes.size(), f) != bytes.size()) bytes.clear();
+		}
+		fclose(f);
+	}
+	bytes = g.shrinkImage(bytes, 1200);
+	if (bytes.empty()) { notice = L"That image couldn't be read"; InvalidateRect(hwnd, nullptr, FALSE); return; }
+
+	coverPaths.clear();
+	for (const auto& p : paths) if (inLibrary(p)) coverPaths.push_back(p);
+	if (coverPaths.empty()) return;
+
+	resumeAfterCover = false;
+	if (current >= 0 && std::find(coverPaths.begin(), coverPaths.end(), queue[current].path) != coverPaths.end())
+	{
+		resumeAfterCover = player.getState() == State::Playing;
+		resumeAt = player.position();
+		resumePath = queue[current].path;
+		player.uninit();
+		audioOk = player.init(0, 0);
+		if (audioOk) player.setVolume(volume);
+	}
+	else resumePath.clear();
+
+	coverBusy = true;
+	coverFailed = 0;
+	coverError.clear();
+	notice = L"Setting the cover\x2026";
+	coverThread = std::thread([this, bytes]() {
+		for (const auto& p : coverPaths)
+		{
+			std::string err;
+			if (!writeCover(narrow(p), bytes, err)) { ++coverFailed; coverError = err; }
+		}
+		PostMessageW(hwnd, WM_COVER_DONE, 0, 0);
+	});
+	InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+void App::finishCover()
+{
+	if (coverThread.joinable()) coverThread.join();
+	coverBusy = false;
+	for (const auto& p : coverPaths)
+	{
+		covers.erase(p);
+		for (Track& t : queue) if (t.path == p) { t.coverBytes.clear(); t.coverLoaded = false; }
+	}
+	coverFor = -1;
+	if (!resumePath.empty() && current >= 0 && queue[current].path == resumePath && audioOk)
+	{
+		if (player.load(fsPath(resumePath)))
+		{
+			player.seek(resumeAt);
+			if (resumeAfterCover) player.play();
+		}
+	}
+	int ok = (int)coverPaths.size() - coverFailed;
+	notice = ok == 1 ? L"Cover set on 1 song" : L"Cover set on " + std::to_wstring(ok) + L" songs";
+	if (coverFailed) notice += L", " + std::to_wstring(coverFailed) + L" failed: " + widen(coverError);
+	updateTimer();
+	InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+bool App::busyImporting()
+{
+	if (!importing && !coverBusy) return false;
+	notice = L"Wait for the import to finish";
+	InvalidateRect(hwnd, nullptr, FALSE);
+	return true;
+}
+
 void App::importFiles(const std::vector<std::wstring>& files)
 {
-	int ok = 0, failed = 0;
-	std::string lastError;
-	for (const auto& f : files)
+	if (files.empty() || busyImporting()) return;
+	importResults.clear();
+	importDone = 0;
+	importTotal = (int)files.size();
+	importCancel = false;
+
+	auto work = [this, files]() {
+		for (const auto& f : files)
+		{
+			if (importCancel) break;
+			ImportResult r{ f, {}, {} };
+			int idx = lib.importFile(narrow(f), r.error);
+			if (idx >= 0) r.copy = lib.tracks()[idx].path;
+			importResults.push_back(std::move(r));
+			++importDone;
+		}
+	};
+
+	if (files.size() == 1)
 	{
-		std::string err;
-		int idx = lib.importFile(narrow(f), err);
-		if (idx < 0) { ++failed; lastError = err; continue; }
+		work();          // one song: quick enough to do right here
+		finishImport();
+		return;
+	}
+	importing = true;
+	notice.clear();
+	importThread = std::thread([this, work]() {
+		work();
+		PostMessageW(hwnd, WM_IMPORT_DONE, 0, 0);
+	});
+	updateTimer();
+	InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+void App::finishImport()
+{
+	if (importThread.joinable()) importThread.join();
+	importing = false;
+	int ok = 0, failed = 0, skipped = 0;
+	std::string lastError;
+	for (const ImportResult& r : importResults)
+	{
+		if (r.copy.empty())
+		{
+			if (r.error == "Not an audio file") ++skipped;
+			else { ++failed; lastError = r.error; }
+			continue;
+		}
 		++ok;
-		std::wstring copy = widen(lib.tracks()[idx].path);
-		for (Track& t : queue) if (t.path == f) t.path = copy;
-		for (std::wstring& r : recentPlayed) if (r == f) r = copy;
+		std::wstring copy = widen(r.copy);
+		for (Track& t : queue) if (t.path == r.source) t.path = copy;
+		for (std::wstring& p : recentPlayed) if (p == r.source) p = copy;
 	}
 	refreshLibrary();
-	wchar_t buf[96];
-	if (failed == 0) swprintf(buf, 96, ok == 1 ? L"Added 1 song" : L"Added %d songs", ok);
-	else swprintf(buf, 96, L"Added %d, %d failed: ", ok, failed);
-	notice = buf;
-	if (failed) notice += widen(lastError);
+	notice = ok == 1 ? L"Added 1 song" : L"Added " + std::to_wstring(ok) + L" songs";
+	if (skipped) notice += L", skipped " + std::to_wstring(skipped) + L" non-audio";
+	if (failed) notice += L", " + std::to_wstring(failed) + L" failed: " + widen(lastError);
+	if (importCancel) notice += L" (cancelled)";
+	importResults.clear();
+	updateTimer();
 	InvalidateRect(hwnd, nullptr, FALSE);
 }
 
@@ -1310,7 +1548,7 @@ void App::updateTimer()
 {
 	// Animation frames are driven by paint() itself (see there), so the timer is only
 	// for the clock and seek bar while playing.
-	UINT want = player.getState() == State::Playing ? 200 : 0;
+	UINT want = player.getState() == State::Playing || importing ? 200 : 0;
 	if (want == timerMs) return;
 	if (want) SetTimer(hwnd, kTimer, want, nullptr);
 	else KillTimer(hwnd, kTimer);

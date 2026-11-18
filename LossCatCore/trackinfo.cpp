@@ -7,6 +7,7 @@
 #include <taglib/aiffproperties.h>
 #include <taglib/mp4properties.h>
 #include <cstdlib>
+#include <filesystem>
 
 static bool readNumber(const TagLib::PropertyMap& tags, const char* key, float& out)
 {
@@ -29,7 +30,9 @@ static bool readNumber(const TagLib::PropertyMap& tags, const char* key, float& 
 TrackInfo readTrackInfo(const std::string& path)
 {
 	TrackInfo info;
-	TagLib::FileRef f(path.c_str());
+	// path is UTF-8; on Windows path::c_str() is wchar_t, which TagLib opens with the Unicode API
+	std::filesystem::path p(std::u8string(path.begin(), path.end()));
+	TagLib::FileRef f(p.c_str());
 	if (f.isNull())
 	{
 		return info;
@@ -92,4 +95,28 @@ TrackInfo readTrackInfo(const std::string& path)
 
 	info.valid = true;
 	return info;
+}
+
+bool writeCover(const std::string& path, const std::vector<unsigned char>& image, std::string& error)
+{
+	std::filesystem::path p(std::u8string(path.begin(), path.end()));
+	TagLib::FileRef f(p.c_str());
+	if (f.isNull())
+	{
+		error = "Can't open this file's tags";
+		return false;
+	}
+	TagLib::ByteVector data(reinterpret_cast<const char*>(image.data()), static_cast<unsigned int>(image.size()));
+	TagLib::String mime = data.startsWith("\x89PNG\x0d\x0a\x1a\x0a") ? "image/png" : "image/jpeg";
+	if (!f.setComplexProperties("PICTURE", { { { "data", data }, { "pictureType", "Front Cover" }, { "mimeType", mime } } }))
+	{
+		error = "This format can't hold cover art";
+		return false;
+	}
+	if (!f.save())
+	{
+		error = "Couldn't save the file";
+		return false;
+	}
+	return true;
 }

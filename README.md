@@ -8,11 +8,17 @@ LossCat is an early-stage project. The basics are in place, but there are still 
 
 - Plays FLAC, WAV, AIFF and MP3.
 - Organises imported music by artist and album.
-- Lets you browse albums, artists, songs and playlists.
+- Lets you browse albums, artists, songs and playlists, with dedicated album and artist pages.
+- Opens an album or artist page when clicked; album tiles have a play button on hover.
 - Keeps playlists and Favourites in `.m3u8` files.
 - Shows cover art, embedded lyrics and audio information from file tags.
+- Shows cover thumbnails in the queue and Up next.
+- Embeds custom album covers into library files.
+- Imports multiple files in the background, with progress and cancellation.
+- Supports Unicode file paths for playback, metadata and imports.
 - Displays the source and output sample rates, including whether resampling is happening.
 - Includes a queue, shuffle, repeat and media-key controls.
+- Shows playlist names on hover when the sidebar is collapsed.
 
 ## Using it
 
@@ -30,6 +36,12 @@ Music\LossCat\
 ```
 
 Importing leaves the original files alone. Removing imported songs from the library sends the library copies to the Recycle Bin. Deleting a playlist only deletes the playlist, not its songs.
+
+### Album covers
+
+Right-click an album and choose **Set album cover** to pick a JPEG or PNG image. LossCat resizes it to fit within 1200 pixels, converts it to JPEG and embeds it into each song's tags using TagLib.
+
+This changes the library files themselves, replacing their embedded cover art. Files outside the library are not modified.
 
 ### Shortcuts
 
@@ -56,8 +68,6 @@ vcpkg restores TagLib from the manifest. The first build may take longer while d
 
 ## Current limitations
 
-- Large imports can block the interface.
-- Some non-Latin file paths may fail to open or import.
 - Volume, queue and recently played history are not restored between sessions.
 - Playback uses shared-mode audio; there is no exclusive mode.
 - Audio-device changes may require restarting the app.

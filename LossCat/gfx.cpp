@@ -1,11 +1,16 @@
 #include "gfx.h"
 #include <cmath>
+#include <cstring>
+#include <objbase.h>
+#include <oleauto.h>
 #include <cstdlib>
 #include <cctype>
 
 #pragma comment(lib, "d2d1")
 #pragma comment(lib, "dwrite")
 #pragma comment(lib, "windowscodecs")
+#pragma comment(lib, "ole32")
+#pragma comment(lib, "oleaut32")
 
 static D2D1_COLOR_F color(uint32_t rgb, float alpha)
 {
@@ -426,6 +431,71 @@ ComPtr<ID2D1Bitmap> Gfx::loadImage(const std::vector<unsigned char>& bytes, UINT
 		nullptr, 0.0, WICBitmapPaletteTypeCustom))) return bmp;
 	target->CreateBitmapFromWicBitmap(conv.Get(), nullptr, &bmp);
 	return bmp;
+}
+
+std::vector<unsigned char> Gfx::shrinkImage(const std::vector<unsigned char>& bytes, UINT maxPixels)
+{
+	if (!wic || bytes.empty()) return bytes;
+	ComPtr<IWICStream> in;
+	ComPtr<IWICBitmapDecoder> decoder;
+	ComPtr<IWICBitmapFrameDecode> frame;
+	if (FAILED(wic->CreateStream(&in))) return bytes;
+	if (FAILED(in->InitializeFromMemory(const_cast<BYTE*>(bytes.data()), (DWORD)bytes.size()))) return bytes;
+	if (FAILED(wic->CreateDecoderFromStream(in.Get(), nullptr, WICDecodeMetadataCacheOnLoad, &decoder))) return {};
+	if (FAILED(decoder->GetFrame(0, &frame))) return {};
+	UINT w = 0, h = 0;
+	frame->GetSize(&w, &h);
+	if (w <= maxPixels && h <= maxPixels && bytes.size() <= 1500 * 1024) return bytes;
+
+	ComPtr<IWICBitmapSource> source = frame;
+	if (w > maxPixels || h > maxPixels)
+	{
+		ComPtr<IWICBitmapScaler> scaler;
+		UINT sw = w >= h ? maxPixels : (UINT)((double)w * maxPixels / h);
+		UINT sh = h >= w ? maxPixels : (UINT)((double)h * maxPixels / w);
+		if (SUCCEEDED(wic->CreateBitmapScaler(&scaler)) &&
+			SUCCEEDED(scaler->Initialize(frame.Get(), sw ? sw : 1, sh ? sh : 1, WICBitmapInterpolationModeFant)))
+			source = scaler;
+	}
+	ComPtr<IWICFormatConverter> conv;
+	if (FAILED(wic->CreateFormatConverter(&conv)) ||
+		FAILED(conv->Initialize(source.Get(), GUID_WICPixelFormat24bppBGR, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom)))
+		return bytes;
+
+	ComPtr<IStream> out;
+	if (FAILED(CreateStreamOnHGlobal(nullptr, TRUE, &out))) return bytes;
+	ComPtr<IWICBitmapEncoder> encoder;
+	ComPtr<IWICBitmapFrameEncode> target;
+	ComPtr<IPropertyBag2> props;
+	if (FAILED(wic->CreateEncoder(GUID_ContainerFormatJpeg, nullptr, &encoder))) return bytes;
+	if (FAILED(encoder->Initialize(out.Get(), WICBitmapEncoderNoCache))) return bytes;
+	if (FAILED(encoder->CreateNewFrame(&target, &props))) return bytes;
+	PROPBAG2 opt = {};
+	opt.pstrName = const_cast<LPOLESTR>(L"ImageQuality");
+	VARIANT q;
+	VariantInit(&q);
+	q.vt = VT_R4;
+	q.fltVal = 0.9f;
+	props->Write(1, &opt, &q);
+	UINT ow = 0, oh = 0;
+	conv->GetSize(&ow, &oh);
+	WICPixelFormatGUID fmt = GUID_WICPixelFormat24bppBGR;
+	if (FAILED(target->Initialize(props.Get())) || FAILED(target->SetSize(ow, oh)) ||
+		FAILED(target->SetPixelFormat(&fmt)) || FAILED(target->WriteSource(conv.Get(), nullptr)) ||
+		FAILED(target->Commit()) || FAILED(encoder->Commit()))
+		return bytes;
+
+	HGLOBAL mem = nullptr;
+	if (FAILED(GetHGlobalFromStream(out.Get(), &mem))) return bytes;
+	STATSTG st = {};
+	out->Stat(&st, STATFLAG_NONAME);
+	std::vector<unsigned char> result((size_t)st.cbSize.QuadPart);
+	if (void* p = GlobalLock(mem))
+	{
+		memcpy(result.data(), p, result.size());
+		GlobalUnlock(mem);
+	}
+	return result.empty() ? bytes : result;
 }
 
 void Gfx::image(ID2D1Bitmap* bmp, const Rect& r, float radius)
