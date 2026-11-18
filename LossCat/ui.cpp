@@ -445,6 +445,7 @@ void App::drawMain()
 	case Page::Home: drawHome(area); break;
 	case Page::Library: drawLibrary(area); break;
 	case Page::Playlist: drawPlaylist(area); break;
+	case Page::License: drawLicense(area); break;
 	case Page::Now: drawNowPlaying(area); break;
 	case Page::Settings: drawSettings(area); break;
 	}
@@ -1105,7 +1106,9 @@ void App::drawSettings(const Rect& a)
 {
 	float x = a.x + 6, w = a.w - 12;
 	if (w > 880) w = 880;
-	float y = a.y;
+	listArea = {};
+	pageArea = a;
+	float y = a.y - pageScroll;
 	g.text(L"Settings", { x, y, w, 30 }, 22, Font::UiMedium, col::text);
 	y += 52;
 
@@ -1139,13 +1142,84 @@ void App::drawSettings(const Rect& a)
 		Rect b{ x + w - bw, y + 14, bw, 32 };
 		g.stroke(b, hovered(Hit::OpenLibraryFolder) ? 0x5A5A5A : col::chip, 3);
 		g.text(L"Open in Explorer", b, 13, Font::Ui, col::soft, Align::Center);
-		hot(b, Hit::OpenLibraryFolder);
+		hotVisible(b, Hit::OpenLibraryFolder, -1);
 		y += 60;
 		row(L"Songs", L"", n, false, true);
 	}
 
+	links.clear();
+	auto link = [&](const wchar_t* label, const wchar_t* url, float lx, float ly) {
+		float tw = g.textWidth(label, 13, Font::Ui);
+		Rect r{ lx - tw, ly, tw, 20 };
+		int i = (int)links.size();
+		links.push_back(url);
+		bool hov = hovered(Hit::Link, i);
+		g.text(label, r, 13, Font::Ui, hov ? col::white : col::soft, Align::Right);
+		g.line(r.x, r.bottom() - 2.5f, r.right(), r.bottom() - 2.5f, hov ? col::white : 0x5A5A5A, 1);
+		hotVisible(r.inset(-4), Hit::Link, i);
+	};
+
 	section(L"About");
-	row(L"LossCat", L"Built on miniaudio and TagLib", L"0.1", false, true);
+	g.line(x, y + 0.5f, x + w, y + 0.5f, col::line, 1);
+	{
+		Rect logo{ x, y + 18, 24, 24 };
+		g.icon(icons::cat, logo, col::text, true);
+		g.icon(icons::catTail, logo, col::text, false, 1.8f);
+		g.text(L"LossCat", { x + 36, y + 11, 300, 20 }, 14, Font::UiMedium, col::text);
+		g.text(L"Version 0.1.0, \u00A9 2026 SegCat", { x + 36, y + 31, 400, 18 }, 12, Font::Ui, col::dim);
+		link(L"MIT License", L"license:201|LossCat", x + w, y + 20);
+		y += 60;
+	}
+	g.line(x, y - 0.5f, x + w, y - 0.5f, col::line, 1);
+	y += 30;
+
+	section(L"Credits");
+	struct Credit { const wchar_t* name; const wchar_t* what; const wchar_t* license; const wchar_t* url; const wchar_t* text; };
+	const Credit credits[] = {
+		{ L"miniaudio", L"Audio decoding and playback, by David Reid", L"Public domain or MIT No Attribution", L"https://github.com/mackron/miniaudio", L"license:202|miniaudio" },
+		{ L"TagLib", L"Tags, audio properties and cover art", L"LGPL 2.1 or MPL 1.1", L"https://github.com/taglib/taglib", L"license:203|TagLib" },
+		{ L"zlib", L"Compression, used by TagLib", L"zlib License", L"https://zlib.net", L"license:204|zlib" },
+		{ L"UTF8-CPP", L"Text encoding, used by TagLib", L"Boost Software License 1.0", L"https://github.com/nemtrif/utfcpp", L"license:205|UTF8-CPP" },
+	};
+	for (const Credit& c : credits)
+	{
+		g.line(x, y + 0.5f, x + w, y + 0.5f, col::line, 1);
+		g.text(c.name, { x, y + 11, w * 0.6f, 20 }, 14, Font::Ui, col::text);
+		g.text(c.what, { x, y + 31, w * 0.6f, 18 }, 12, Font::Ui, col::dim);
+		g.text(c.license, { x + w * 0.4f, y + 11, w * 0.6f, 20 }, 13, Font::Ui, col::dim, Align::Right);
+		float lw = g.textWidth(L"License", 13, Font::Ui);
+		link(L"License", c.text, x + w, y + 32);
+		link(L"Source", c.url, x + w - lw - 16, y + 32);
+		y += 64;
+	}
+	g.line(x, y - 0.5f, x + w, y - 0.5f, col::line, 1);
+	pageMaxScroll = (y + pageScroll) - a.bottom() + 24;
+	if (pageMaxScroll < 0) pageMaxScroll = 0;
+}
+
+void App::drawLicense(const Rect& a)
+{
+	listArea = {};
+	pageArea = a;
+	float x = a.x + 6, w = a.w - 12;
+	if (w > 880) w = 880;
+	float y = a.y - pageScroll;
+
+	float bw = g.textWidth(L"Settings", 13, Font::UiMedium) + 40;
+	Rect back{ x, y, bw, 30 };
+	if (hovered(Hit::Back)) g.fill(back, col::hover, 15);
+	g.stroke(back, col::chip, 15);
+	g.icon("M15 6l-6 6 6 6", { back.x + 10, back.cy() - 8, 16, 16 }, col::text, false, 1.8f);
+	g.text(L"Settings", { back.x + 30, back.y, bw - 34, 30 }, 13, Font::UiMedium, col::text);
+	hotVisible(back, Hit::Back, -1);
+	y += 30 + 20;
+	g.text(licenseTitle + L" license", { x, y, w, 30 }, 22, Font::UiMedium, col::text);
+	y += 46;
+	float h = g.textBlock(licenseText.empty() ? L"License text not found." : licenseText,
+		{ x, y, w, 0 }, 12, Font::Mono, col::soft, 4000, 18);
+	y += h + 24;
+	pageMaxScroll = (y + pageScroll) - a.bottom();
+	if (pageMaxScroll < 0) pageMaxScroll = 0;
 }
 
 // ---------------------------------------------------------------- queue drawer

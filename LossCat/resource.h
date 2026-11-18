@@ -1,0 +1,9 @@
+#pragma once
+
+#define IDI_APPICON 101
+
+#define IDR_LICENSE_LOSSCAT   201
+#define IDR_LICENSE_MINIAUDIO 202
+#define IDR_LICENSE_TAGLIB    203
+#define IDR_LICENSE_ZLIB      204
+#define IDR_LICENSE_UTFCPP    205

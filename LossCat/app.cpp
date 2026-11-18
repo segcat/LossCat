@@ -1,4 +1,5 @@
 #include "app.h"
+#include "resource.h"
 #include "names.h"
 #include <windowsx.h>
 #include <dwmapi.h>
@@ -91,7 +92,9 @@ bool App::create(HINSTANCE inst, int show)
 	wc.hInstance = inst;
 	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
 	wc.lpszClassName = kClassName;
-	wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+	wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(IDI_APPICON));
+	wc.hIconSm = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON,
+		GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR);
 	RegisterClassExW(&wc);
 
 	hwnd = CreateWindowExW(0, kClassName, L"LossCat", WS_OVERLAPPEDWINDOW,
@@ -632,6 +635,19 @@ void App::click(Hit id, int index)
 			if (ensureInLibrary(p)) openPlaylistChooser({ p }, mouseX, mouseY);
 		}
 		break;
+	case Hit::Link:
+		if (index >= 0 && index < (int)links.size())
+		{
+			const std::wstring& l = links[index];
+			if (l.rfind(L"license:", 0) == 0)
+			{
+				size_t bar = l.find(L'|');
+				openLicense(_wtoi(l.c_str() + 8), l.substr(bar + 1));
+			}
+			else ShellExecuteW(hwnd, L"open", l.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+		}
+		break;
+	case Hit::Back: page = Page::Settings; pageScroll = 0; break;
 	case Hit::RowHeart:
 		if (index >= 0 && index < (int)rowHeartPaths.size()) toggleFavourite(rowHeartPaths[index]);
 		break;
@@ -640,7 +656,7 @@ void App::click(Hit id, int index)
 	case Hit::ImportFiles: { auto f = pickFiles(); if (!f.empty()) importFiles(f); break; }
 	case Hit::Rescan: loadLibrary(); notice.clear(); break;
 	case Hit::AddToLibrary: if (current >= 0 && !inLibrary(queue[current].path)) importFiles({ queue[current].path }); break;
-	case Hit::Settings: case Hit::SignalPath: page = Page::Settings; break;
+	case Hit::Settings: case Hit::SignalPath: page = Page::Settings; pageScroll = 0; break;
 	case Hit::WinMin: ShowWindow(hwnd, SW_MINIMIZE); break;
 	case Hit::WinClose: PostMessageW(hwnd, WM_CLOSE, 0, 0); break;
 	case Hit::TabNext: npTab = 0; break;
@@ -967,6 +983,25 @@ bool App::ensureInLibrary(std::wstring& path)
 	importFiles({ original });
 	if (current >= 0 && !queue.empty()) path = queue[current].path;
 	return inLibrary(path);
+}
+
+// License texts are compiled into the exe (LossCat.rc), so they travel with every copy.
+void App::openLicense(int resourceId, const std::wstring& title)
+{
+	licenseText.clear();
+	if (HRSRC res = FindResourceW(nullptr, MAKEINTRESOURCEW(resourceId), MAKEINTRESOURCEW(10)))   // RT_RCDATA
+	{
+		if (HGLOBAL h = LoadResource(nullptr, res))
+		{
+			const char* data = static_cast<const char*>(LockResource(h));
+			DWORD size = SizeofResource(nullptr, res);
+			if (data) licenseText = widen(std::string(data, size));
+		}
+	}
+	licenseTitle = title;
+	page = Page::License;
+	pageScroll = 0;
+	InvalidateRect(hwnd, nullptr, FALSE);
 }
 
 void App::playPlaylist(int p, int start, bool shuffled)

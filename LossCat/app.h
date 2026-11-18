@@ -36,9 +36,11 @@ enum class Hit
 	Favourite, EditBox,
 	BarFavourite, BarAddTo, LibTabPlaylists, PlaylistTile,
 	RowHeart,
+	Link,            // + index into links
+	Back,
 };
 
-enum class Page { Home, Now, Library, Settings, Playlist };
+enum class Page { Home, Now, Library, Settings, Playlist, License };
 
 struct Track
 {
@@ -88,6 +90,8 @@ private:
 	ID2D1Bitmap* coverOf(const std::wstring& path);
 	void drawNowPlaying(const Rect& area);
 	void drawSettings(const Rect& area);
+	void drawLicense(const Rect& area);
+	void openLicense(int resourceId, const std::wstring& title);
 	void drawPlayerBar();
 	void drawQueuePanel();
 	void drawMenu();
@@ -184,7 +188,9 @@ private:
 	std::wstring editText;
 	float sideScroll = 0, sideMaxScroll = 0;
 	Rect sideList;
-	std::vector<std::wstring> rowHeartPaths;   // song table hearts this frame, by row index
+	std::vector<std::wstring> rowHeartPaths;
+	std::vector<std::wstring> links;   // URLs of the Link hits drawn this frame (or "license:<id>")
+	std::wstring licenseTitle, licenseText;   // song table hearts this frame, by row index
 	float listScroll = 0;
 	float listMaxScroll = 0;
 	Rect listArea;
