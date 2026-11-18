@@ -1,6 +1,7 @@
 // Layout and drawing. Numbers come straight from the design canvas (CSS px = DIPs).
 #include "app.h"
 #include <cmath>
+#include <algorithm>
 #include <cstdio>
 #include <cwchar>
 #include <cwctype>
@@ -20,6 +21,9 @@ namespace icons
 	const char* toggle = "M5 4H19A2 2 0 0 1 21 6V18A2 2 0 0 1 19 20H5A2 2 0 0 1 3 18V6A2 2 0 0 1 5 4ZM9 4v16";
 	const char* now = "M21 12A9 9 0 1 1 3 12A9 9 0 1 1 21 12ZM15 12A3 3 0 1 1 9 12A3 3 0 1 1 15 12Z";
 	const char* home = "M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z";
+	const char* library = "M4 4v16M9 4v16M14 4l5 16";
+	const char* check = "M5 12.5l4.5 4.5L19 7.5";
+	const char* plus = "M12 5v14M5 12h14";
 	const char* gear = "M15 12A3 3 0 1 1 9 12A3 3 0 1 1 15 12ZM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z";
 	const char* shuffle = "M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5";
 	const char* prev = "M19 19L9 12l10-7zM6 5h1.2a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z";
@@ -168,6 +172,7 @@ void App::paint()
 {
 	layout();
 	if (!g.begin()) return;
+	++frameNo;
 	hots.clear();
 	g.clear(col::base);
 	drawSidebar();
@@ -175,7 +180,10 @@ void App::paint()
 	drawQueuePanel();
 	drawWindowControls({ 8, 8, W - 16, H - 104 });   // always in the window's top-right corner
 	drawPlayerBar();
-	g.end();   // blocks until the next vsync, so this paces animation frames to the display
+	if (menuOpen) drawMenu();
+	if (confirmOpen) drawConfirm();
+	g.end();
+	trimCovers();   // blocks until the next vsync, so this paces animation frames to the display
 
 	// While something animates, ask for the next frame straight away instead of using a
 	// timer: WM_TIMER only fires every ~15.6 ms and drifts against the display, which
@@ -220,6 +228,7 @@ void App::drawSidebar()
 	const Item items[] = {
 		{ Hit::NavNow, Page::Now, icons::now, L"Now playing" },
 		{ Hit::NavHome, Page::Home, icons::home, L"Home" },
+		{ Hit::NavLibrary, Page::Library, icons::library, L"Library" },
 	};
 	float rowH = 32 * (1 - t);
 	float rowAlpha = 1 - clamp01(t * 2);
@@ -299,7 +308,7 @@ void App::drawMain()
 	{
 		float a = clamp01((navGeo - 0.5f) * 2);
 		struct Item { Hit id; Page pg; const char* icon; };
-		const Item items[] = { { Hit::NavNow, Page::Now, icons::now }, { Hit::NavHome, Page::Home, icons::home } };
+		const Item items[] = { { Hit::NavNow, Page::Now, icons::now }, { Hit::NavHome, Page::Home, icons::home }, { Hit::NavLibrary, Page::Library, icons::library } };
 		float x = p.x + 38 - 6 * (1 - a);
 		for (const Item& it : items)
 		{
@@ -318,12 +327,20 @@ void App::drawMain()
 	switch (page)
 	{
 	case Page::Home: drawHome(area); break;
+	case Page::Library: drawLibrary(area); break;
 	case Page::Now: drawNowPlaying(area); break;
 	case Page::Settings: drawSettings(area); break;
 	}
 	g.popClip();
 
 	g.popClip();
+}
+
+void App::hotVisible(const Rect& r, Hit id, int index)
+{
+	float top = r.y > pageArea.y ? r.y : pageArea.y;
+	float bot = r.bottom() < pageArea.bottom() ? r.bottom() : pageArea.bottom();
+	if (bot > top) hot({ r.x, top, r.w, bot - top }, id, index);
 }
 
 void App::drawEmpty(const Rect& a, const wchar_t* heading, const wchar_t* body, bool button)
@@ -342,55 +359,280 @@ void App::drawEmpty(const Rect& a, const wchar_t* heading, const wchar_t* body, 
 	}
 }
 
-// Song table rows (Home): # | title | artist | album | format | time
-void App::drawTrackRows(const Rect& a, int first, bool)
+void App::drawTrackRows(const Rect& a, const std::vector<Track>& list, Hit rowHit)
 {
-	float y = a.y;
-	float wTitle = a.w * 0.34f, wArtist = a.w * 0.22f, wAlbum = a.w * 0.22f;
+	float flexW = (a.right() - 12 - 56 - 16 - 110) - (a.x + 52);
+	bool showAlbum = flexW >= 420;
+	float wTitle = flexW * (showAlbum ? 0.44f : 0.6f), wArtist = flexW * (showAlbum ? 0.28f : 0.4f), wAlbum = showAlbum ? flexW * 0.28f : 0;
 	float colX[] = { a.x + 12, a.x + 52, a.x + 52 + wTitle, a.x + 52 + wTitle + wArtist, a.right() - 12 - 56 - 16 - 110, a.right() - 12 - 56 };
-	if (wAlbum + colX[3] > colX[4]) wAlbum = colX[4] - colX[3] - 16;
-	// header
+
+	float y = a.y;
 	g.text(L"#", { colX[0], y, 30, 30 }, 12, Font::Ui, col::muted);
 	g.text(L"Title", { colX[1], y, wTitle - 16, 30 }, 12, Font::Ui, col::muted);
 	g.text(L"Artist", { colX[2], y, wArtist - 16, 30 }, 12, Font::Ui, col::muted);
-	g.text(L"Album", { colX[3], y, wAlbum - 16, 30 }, 12, Font::Ui, col::muted);
+	if (showAlbum) g.text(L"Album", { colX[3], y, wAlbum - 16, 30 }, 12, Font::Ui, col::muted);
 	g.text(L"Format", { colX[4], y, 110, 30 }, 12, Font::Ui, col::muted);
 	g.text(L"Time", { colX[5], y, 56, 30 }, 12, Font::Ui, col::muted, Align::Right);
 	y += 30;
 	g.line(a.x, y - 0.5f, a.right(), y - 0.5f, col::line, 1);
-	for (int i = first; i < (int)queue.size() && y + 30 <= a.bottom(); ++i)
+
+	listArea = { a.x, y, a.w, a.bottom() - y };
+	listMaxScroll = (float)list.size() * 30 - listArea.h;
+	if (listMaxScroll < 0) listMaxScroll = 0;
+	if (listScroll > listMaxScroll) listScroll = listMaxScroll;
+	const std::wstring* playing = current >= 0 ? &queue[current].path : nullptr;
+
+	g.pushClip(listArea);
+	int first = (int)(listScroll / 30);
+	for (int i = first; i < (int)list.size(); ++i)
 	{
-		const Track& t = queue[i];
-		Rect r{ a.x, y, a.w, 30 };
-		bool on = i == current;
-		if (hovered(Hit::QueueRow, i)) g.fill(r, col::hover);
+		float ry = listArea.y + i * 30 - listScroll;
+		if (ry >= listArea.bottom()) break;
+		const Track& t = list[i];
+		Rect r{ a.x, ry, a.w, 30 };
+		bool on = playing && *playing == t.path;
+		if (hovered(rowHit, i)) g.fill(r, col::hover);
 		uint32_t fg = on ? col::white : col::text;
 		wchar_t num[16];
 		swprintf(num, 16, L"%d", i + 1);
-		g.text(num, { colX[0], y, 30, 30 }, 12, Font::Mono, on ? col::white : col::muted);
-		g.text(t.title, { colX[1], y, wTitle - 16, 30 }, 13, on ? Font::UiMedium : Font::Ui, fg);
-		g.text(t.artist, { colX[2], y, wArtist - 16, 30 }, 13, Font::Ui, col::soft);
-		g.text(t.album, { colX[3], y, wAlbum - 16, 30 }, 13, Font::Ui, col::soft);
+		g.text(num, { colX[0], ry, 30, 30 }, 12, Font::Mono, on ? col::white : col::muted);
+		g.text(t.title, { colX[1], ry, wTitle - 16, 30 }, 13, on ? Font::UiMedium : Font::Ui, fg);
+		g.text(t.artist, { colX[2], ry, wArtist - 16, 30 }, 13, Font::Ui, col::soft);
+		if (showAlbum) g.text(t.album, { colX[3], ry, wAlbum - 16, 30 }, 13, Font::Ui, col::soft);
 		std::wstring fmt = codecOf(t.path);
 		if (t.info.sampleRate)
 			fmt += L" " + (t.info.bitsPerSample ? std::to_wstring(t.info.bitsPerSample) + L"/" : L"") + fmtRate(t.info.sampleRate);
-		g.text(fmt, { colX[4], y, 110, 30 }, 12, Font::Mono, col::dim);
-		g.text(fmtTime(t.info.durationMs / 1000.0), { colX[5], y, 56, 30 }, 12, Font::Mono, col::dim, Align::Right);
-		g.line(a.x, y + 29.5f, a.right(), y + 29.5f, 0x202020, 1);
-		hot(r, Hit::QueueRow, i);
-		y += 30;
+		g.text(fmt, { colX[4], ry, 110, 30 }, 12, Font::Mono, col::dim);
+		g.text(fmtTime(t.info.durationMs / 1000.0), { colX[5], ry, 56, 30 }, 12, Font::Mono, col::dim, Align::Right);
+		g.line(a.x, ry + 29.5f, a.right(), ry + 29.5f, 0x202020, 1);
+		float top = ry < listArea.y ? listArea.y : ry;
+		float bot = ry + 30 > listArea.bottom() ? listArea.bottom() : ry + 30;
+		if (bot > top) hot({ a.x, top, a.w, bot - top }, rowHit, i);
 	}
+	g.popClip();
+}
+
+ID2D1Bitmap* App::coverOf(const std::wstring& path)
+{
+	if (coversGen != g.generation()) { covers.clear(); coversGen = g.generation(); }
+	auto it = covers.find(path);
+	if (it != covers.end())
+	{
+		it->second.lastUsed = frameNo;
+		return it->second.bmp.Get();
+	}
+	UINT px = (UINT)(320 * scale);
+	CachedCover& c = covers[path];
+	c.bmp = g.loadImage(readTrackInfo(fsPath(path)).coverData, px);
+	c.lastUsed = frameNo;
+	return c.bmp.Get();
+}
+
+void App::trimCovers()
+{
+	// Keep the most recently shown covers; the rest are decoded again if they come back on screen.
+	const size_t keep = 120;
+	if (covers.size() <= keep + 30) return;
+	std::vector<std::pair<unsigned long long, std::wstring>> byAge;
+	for (const auto& [path, c] : covers) byAge.push_back({ c.lastUsed, path });
+	std::sort(byAge.begin(), byAge.end());
+	for (size_t i = 0; i + keep < byAge.size(); ++i) covers.erase(byAge[i].second);
+}
+
+float App::drawTiles(const std::vector<Tile>& tiles, float x, float y, float w, Hit hit, bool round)
+{
+	if (tiles.empty()) return 0;
+	float minW = round ? 110.0f : 140.0f, gap = round ? 20.0f : 8.0f;
+	int cols = (int)((w + gap) / (minW + gap));
+	if (cols < 1) cols = 1;
+	float tw = (w - (cols - 1) * gap) / cols;
+	float pad = round ? 0.0f : 8.0f;
+	float th = pad + (tw - 2 * pad) + 10 + 18 + (round ? 0 : 18) + pad;
+	for (int i = 0; i < (int)tiles.size(); ++i)
+	{
+		const Tile& t = tiles[i];
+		Rect r{ x + (i % cols) * (tw + gap), y + (i / cols) * (th + (round ? 0 : gap)), tw, th };
+		if (r.bottom() < pageArea.y || r.y > pageArea.bottom()) continue;
+		bool hov = hovered(hit, i);
+		if (hov && !round) g.fill(r, col::hover, 4);
+		Rect img{ r.x + pad, r.y + pad, tw - 2 * pad, tw - 2 * pad };
+		if (round)
+		{
+			g.circle(img.cx(), img.cy(), img.w / 2, hov ? 0x353535 : 0x2E2E2E);
+			std::wstring initial = t.title.empty() ? L"?" : t.title.substr(0, 1);
+			g.text(initial, img, img.w * 0.32f, Font::UiMedium, col::dim, Align::Center);
+		}
+		else
+		{
+			ID2D1Bitmap* bmp = coverOf(t.coverPath);
+			if (bmp) g.image(bmp, img, 2);
+			else g.fill(img, col::tile, 2);
+			g.stroke(img, 0x313131, 2, 1, 0.6f);
+			if (t.playing)
+			{
+				Rect badge{ img.right() - 28, img.bottom() - 28, 20, 20 };
+				g.fill(badge, col::panel, 2);
+				g.icon(icons::play, { badge.cx() - 6, badge.cy() - 6, 12, 12 }, col::white, true);
+			}
+		}
+		float ty = img.bottom() + 10;
+		g.text(t.title, { r.x + pad, ty, tw - 2 * pad, 18 }, 13, Font::UiMedium, t.playing ? col::white : col::text, round ? Align::Center : Align::Left);
+		if (!round) g.text(t.sub, { r.x + pad, ty + 18, tw - 2 * pad, 18 }, 13, Font::Ui, col::dim);
+		hotVisible(r, hit, i);
+	}
+	int rows = ((int)tiles.size() + cols - 1) / cols;
+	return rows * th + (rows - 1) * (round ? 0 : gap);
+}
+
+static void sectionTitle(Gfx& g, const wchar_t* s, float x, float y, float w)
+{
+	g.text(s, { x + 6, y, w - 12, 22 }, 14, Font::UiMedium, col::text);
 }
 
 void App::drawHome(const Rect& a)
 {
-	if (queue.empty())
+	listArea = {};
+	pageArea = a;
+	if (libTracks.empty() && recentPlayed.empty())
 	{
-		drawEmpty(a, L"Add your music", L"Drop audio files on this window, or open them.", true);
+		pageMaxScroll = 0;
+		drawEmpty(a, L"Your library is empty",
+			L"Import songs to copy them into your LossCat folder, or drop files on this window to just play them.", false);
+		Rect b{ a.cx() - 210, a.y + 78 + 36 + 21 * 2 + 14, g.textWidth(L"Import files", 13, Font::UiMedium) + 28, 32 };
+		g.fill(b, hovered(Hit::ImportFiles) ? 0xFFFFFF : col::text, 3);
+		g.text(L"Import files", b, 13, Font::UiMedium, 0x131313, Align::Center);
+		hot(b, Hit::ImportFiles);
 		return;
 	}
-	g.text(L"This session", { a.x + 6, a.y, a.w, 24 }, 13, Font::UiMedium, col::dim);
-	drawTrackRows({ a.x, a.y + 36, a.w, a.h - 36 }, 0, false);
+
+	const std::wstring* playing = current >= 0 ? &queue[current].path : nullptr;
+	float y = a.y - pageScroll;
+	auto songTile = [&](const Track& t) {
+		Tile tl{ t.title, t.artist, t.path, playing && *playing == t.path };
+		return tl;
+	};
+
+	if (!recentPlayed.empty())
+	{
+		sectionTitle(g, L"Recently played", a.x, y, a.w);
+		y += 34;
+		std::vector<Tile> tiles;
+		for (const auto& p : recentPlayed)
+		{
+			auto it = std::find_if(queue.begin(), queue.end(), [&](const Track& t) { return t.path == p; });
+			if (it != queue.end()) tiles.push_back(songTile(*it));
+		}
+		y += drawTiles(tiles, a.x, y, a.w, Hit::RecentTile, false) + 30;
+	}
+	if (!recentlyAdded.empty())
+	{
+		sectionTitle(g, L"Recently added", a.x, y, a.w);
+		y += 34;
+		std::vector<Tile> tiles;
+		for (int i : recentlyAdded) tiles.push_back(songTile(libTracks[i]));
+		y += drawTiles(tiles, a.x, y, a.w, Hit::AddedTile, false) + 30;
+	}
+	if (!artists.empty())
+	{
+		sectionTitle(g, L"Artists", a.x, y, a.w);
+		y += 38;
+		std::vector<Tile> tiles;
+		for (size_t i = 0; i < artists.size() && i < 14; ++i) tiles.push_back({ artists[i].name, L"", L"" });
+		y += drawTiles(tiles, a.x + 6, y, a.w - 12, Hit::ArtistTile, true) + 30;
+	}
+	pageMaxScroll = (y + pageScroll) - a.bottom();
+	if (pageMaxScroll < 0) pageMaxScroll = 0;
+}
+
+void App::drawLibrary(const Rect& a)
+{
+	listArea = {};
+	float y = a.y;
+	g.text(L"Library", { a.x + 6, y, 120, 30 }, 22, Font::UiMedium, col::text);
+	const wchar_t* tabs[] = { L"Albums", L"Artists", L"Songs" };
+	const Hit tabHits[] = { Hit::LibTabAlbums, Hit::LibTabArtists, Hit::LibTabSongs };
+	float tx = a.x + 6 + g.textWidth(L"Library", 22, Font::UiMedium) + 28;
+	for (int i = 0; i < 3; ++i)
+	{
+		float tw = g.textWidth(tabs[i], 13, Font::UiMedium);
+		Rect r{ tx, y + 2, tw, 28 };
+		bool on = libTab == i;
+		g.text(tabs[i], r, 13, Font::UiMedium, on || hovered(tabHits[i]) ? col::text : col::muted);
+		if (on) g.fill({ tx, r.bottom() - 2, tw, 2 }, col::text);
+		hot(r, tabHits[i]);
+		tx += tw + 18;
+	}
+	float bx = a.right() - 6;
+	auto button = [&](const wchar_t* label, Hit id, bool primary) {
+		float bw = g.textWidth(label, 13, Font::UiMedium) + 28;
+		Rect b{ bx - bw, y, bw, 30 };
+		if (primary) g.fill(b, hovered(id) ? 0xFFFFFF : col::text, 3);
+		else { if (hovered(id)) g.fill(b, col::hover, 3); g.stroke(b, col::chip, 3); }
+		g.text(label, b, 13, Font::UiMedium, primary ? 0x131313 : col::soft, Align::Center);
+		hot(b, id);
+		bx -= bw + 8;
+	};
+	button(L"Import files", Hit::ImportFiles, true);
+	button(L"Rescan", Hit::Rescan, false);
+	if (!notice.empty()) g.text(notice, { tx + 12, y, bx - tx - 20, 30 }, 12, Font::Ui, col::dim, Align::Right);
+	y += 30 + 22;
+
+	Rect body{ a.x, y, a.w, a.bottom() - y };
+	pageArea = body;
+	if (libTracks.empty())
+	{
+		pageMaxScroll = 0;
+		g.text(L"Nothing here yet. Import files to copy them into " + libraryDir + L".",
+			{ a.x + 6, y, a.w - 12, 20 }, 13, Font::Ui, col::dim);
+		return;
+	}
+	if (libTab == 2)
+	{
+		pageMaxScroll = 0;
+		float px = a.x + 6;
+		auto smallButton = [&](const wchar_t* label, const char* icon, bool filled, Hit id, bool primary) {
+			float bw = 12 + 16 + 8 + g.textWidth(label, 13, Font::UiMedium) + 14;
+			Rect b{ px, y, bw, 30 };
+			if (primary) g.fill(b, hovered(id) ? 0xFFFFFF : col::text, 15);
+			else { if (hovered(id)) g.fill(b, col::hover, 15); g.stroke(b, col::chip, 15); }
+			uint32_t fg = primary ? 0x131313 : col::text;
+			g.icon(icon, { b.x + 12, b.cy() - 8, 16, 16 }, fg, filled, 1.6f);
+			g.text(label, { b.x + 36, b.y, bw - 40, 30 }, 13, Font::UiMedium, fg);
+			hot(b, id);
+			px += bw + 8;
+		};
+		smallButton(L"Play all", icons::play, true, Hit::PlayAll, true);
+		smallButton(L"Shuffle", icons::shuffle, false, Hit::ShuffleAll, false);
+		wchar_t cnt[32];
+		swprintf(cnt, 32, libTracks.size() == 1 ? L"%zu song" : L"%zu songs", libTracks.size());
+		g.text(cnt, { px + 8, y, 200, 30 }, 12, Font::Ui, col::muted);
+		drawTrackRows({ body.x, y + 30 + 16, body.w, body.h - 46 }, libTracks, Hit::LibraryRow);
+		return;
+	}
+	g.pushClip(body);
+	float cy = y - pageScroll;
+	float used = 0;
+	const std::wstring* playing = current >= 0 ? &queue[current].path : nullptr;
+	if (libTab == 0)
+	{
+		std::vector<Tile> tiles;
+		for (const Group& al : albums)
+		{
+			bool on = false;
+			for (int i : al.tracks) if (playing && *playing == libTracks[i].path) on = true;
+			tiles.push_back({ al.name, al.artist, libTracks[al.tracks.front()].path, on });
+		}
+		used = drawTiles(tiles, a.x, cy, a.w, Hit::AlbumTile, false);
+	}
+	else
+	{
+		std::vector<Tile> tiles;
+		for (const Group& ar : artists) tiles.push_back({ ar.name, L"", L"" });
+		used = drawTiles(tiles, a.x + 6, cy, a.w - 12, Hit::ArtistTile, true);
+	}
+	g.popClip();
+	pageMaxScroll = used - body.h + 24;
+	if (pageMaxScroll < 0) pageMaxScroll = 0;
 }
 
 ID2D1Bitmap* App::currentCover()
@@ -398,7 +640,7 @@ ID2D1Bitmap* App::currentCover()
 	if (current < 0) return nullptr;
 	if (coverFor != current || coverGen != g.generation())
 	{
-		cover = g.loadImage(queue[current].coverBytes);
+		cover = g.loadImage(queue[current].coverBytes, (UINT)(720 * scale));
 		coverFor = current;
 		coverGen = g.generation();
 	}
@@ -523,7 +765,21 @@ void App::drawNowPlaying(const Rect& a)
 				: L"Resampled to " + signalOutput(), col::dim);
 		}
 		hot(row, Hit::SignalPath);
-		y += 42 + 24;
+		y += 42 + 18;
+	}
+
+	{
+		bool have = inLibrary(tr.path);
+		const wchar_t* label = have ? L"In library" : L"Add to library";
+		float bw = 12 + 16 + 8 + g.textWidth(label, 12, Font::Ui) + 12;
+		Rect b{ x, y, bw, 30 };
+		if (!have && hovered(Hit::AddToLibrary)) g.fill(b, col::hover, 3);
+		g.stroke(b, col::chip, 3);
+		g.icon(have ? icons::check : icons::plus, { b.x + 12, b.cy() - 8, 16, 16 }, have ? col::dim : col::text, false, 1.6f);
+		g.text(label, { b.x + 36, b.y, bw - 44, 30 }, 12, Font::Ui, have ? col::dim : col::text);
+		if (!have) hot(b, Hit::AddToLibrary);
+		if (!notice.empty()) g.text(notice, { b.right() + 12, y, a.right() - b.right() - 12, 30 }, 12, Font::Ui, col::dim);
+		y += 30 + 24;
 	}
 
 	// tabs
@@ -547,8 +803,9 @@ void App::drawNowPlaying(const Rect& a)
 	if (npTab == 0)
 	{
 		bool any = false;
-		for (int i = current + 1; i < (int)queue.size() && y + 46 <= a.bottom(); ++i)
+		for (int i : upcoming())
 		{
+			if (y + 46 > a.bottom()) break;
 			const Track& q = queue[i];
 			Rect r{ x - 10, y, w + 10, 46 };
 			if (hovered(Hit::QueueRow, i)) g.fill(r, col::hover, 2);
@@ -620,6 +877,22 @@ void App::drawSettings(const Rect& a)
 	row(L"Output device", widen(player.backendName()) + L", shared mode", audioOk ? widen(player.deviceName()) : L"No device", false, false);
 	row(L"Device format", L"What Windows mixes at; files at other rates are resampled", fmt, false, true);
 
+	section(L"Library");
+	{
+		wchar_t n[48];
+		swprintf(n, 48, libTracks.size() == 1 ? L"%zu song. Press F5 to rescan" : L"%zu songs. Press F5 to rescan", libTracks.size());
+		g.line(x, y + 0.5f, x + w, y + 0.5f, col::line, 1);
+		g.text(L"Library folder", { x, y + 11, w * 0.55f, 20 }, 14, Font::Ui, col::text);
+		g.text(libraryDir.empty() ? L"Not found" : libraryDir, { x, y + 31, w - 180, 18 }, 12, Font::Mono, col::dim);
+		float bw = g.textWidth(L"Open in Explorer", 13, Font::Ui) + 24;
+		Rect b{ x + w - bw, y + 14, bw, 32 };
+		g.stroke(b, hovered(Hit::OpenLibraryFolder) ? 0x5A5A5A : col::chip, 3);
+		g.text(L"Open in Explorer", b, 13, Font::Ui, col::soft, Align::Center);
+		hot(b, Hit::OpenLibraryFolder);
+		y += 60;
+		row(L"Songs", L"", n, false, true);
+	}
+
 	section(L"About");
 	row(L"LossCat", L"Built on miniaudio and TagLib", L"0.1", false, true);
 }
@@ -671,11 +944,69 @@ void App::drawQueuePanel()
 		row(current, true);
 		y += 16;
 		header(L"Up next");
-		if (current + 1 >= (int)queue.size())
+		std::vector<int> up = upcoming();
+		if (up.empty())
 			g.text(L"Nothing queued", { x + 12, y, w - 24, 20 }, 13, Font::Ui, col::muted);
-		for (int i = current + 1; i < (int)queue.size() && y + 48 <= q.bottom() - 12; ++i) row(i, false);
+		for (int i : up)
+		{
+			if (y + 48 > q.bottom() - 12) break;
+			row(i, false);
+		}
 	}
 	g.popClip();
+}
+
+
+void App::drawMenu()
+{
+	float w = 0;
+	for (const MenuEntry& m : menu)
+	{
+		float tw = g.textWidth(m.label, 13, Font::Ui);
+		if (tw > w) w = tw;
+	}
+	w += 24 + 8;
+	if (w < 180) w = 180;
+	float h = 8.0f + 32.0f * static_cast<float>(menu.size());
+	float x = menuX + w > W - 8 ? menuX - w : menuX;
+	float y = menuY + h > H - 8 ? menuY - h : menuY;
+	Rect r{ x, y, w, h };
+	g.fill({ r.x, r.y + 2, r.w, r.h }, 0x000000, 6, 0.35f);
+	g.fill(r, 0x222222, 6);
+	g.stroke(r, 0x333333, 6);
+	for (int i = 0; i < (int)menu.size(); ++i)
+	{
+		Rect it{ r.x + 4, r.y + 4 + i * 32.0f, r.w - 8, 32 };
+		bool hov = hovered(Hit::MenuItem, i);
+		if (hov) g.fill(it, menu[i].danger ? 0x3A2422 : 0x2E2E2E, 4);
+		g.text(menu[i].label, { it.x + 12, it.y, it.w - 24, it.h }, 13, Font::Ui, menu[i].danger ? 0xE5584F : col::text);
+		hot(it, Hit::MenuItem, i);
+	}
+}
+
+void App::drawConfirm()
+{
+	hot({ 0, 0, W, H }, Hit::Panel);
+	g.fill({ 0, 0, W, H }, 0x000000, 0, 0.5f);
+	float w = 400, h = 150;
+	Rect d{ W / 2 - w / 2, H / 2 - h / 2 - 40, w, h };
+	g.fill(d, 0x1E1E1E, 8);
+	g.stroke(d, 0x333333, 8);
+	g.text(confirmTitle, { d.x + 24, d.y + 22, w - 48, 22 }, 15, Font::UiMedium, col::text);
+	g.textBlock(L"They come out of your LossCat library. You can restore them from the Recycle Bin.",
+		{ d.x + 24, d.y + 52, w - 48, 40 }, 13, Font::Ui, col::dim, 2, 20);
+	float bh = 32, by = d.bottom() - 20 - bh;
+	float okW = g.textWidth(L"Move to Recycle Bin", 13, Font::UiMedium) + 28;
+	Rect ok{ d.right() - 20 - okW, by, okW, bh };
+	g.fill(ok, hovered(Hit::ConfirmOk) ? 0xD9483F : 0xC0403A, 3);
+	g.text(L"Move to Recycle Bin", ok, 13, Font::UiMedium, col::white, Align::Center);
+	hot(ok, Hit::ConfirmOk);
+	float cW = g.textWidth(L"Cancel", 13, Font::UiMedium) + 28;
+	Rect cancel{ ok.x - 8 - cW, by, cW, bh };
+	if (hovered(Hit::ConfirmCancel)) g.fill(cancel, col::hover, 3);
+	g.stroke(cancel, col::chip, 3);
+	g.text(L"Cancel", cancel, 13, Font::UiMedium, col::soft, Align::Center);
+	hot(cancel, Hit::ConfirmCancel);
 }
 
 // ---------------------------------------------------------------- player bar
@@ -795,7 +1126,8 @@ void App::drawPlayerBar()
 	g.fill({ dx, cy - 18, 1, 36 }, 0x2B2B2B);
 	if (W >= 1100)
 	{
-		std::wstring nextTitle = current >= 0 && current + 1 < (int)queue.size() ? queue[current + 1].title : L"Nothing queued";
+		std::vector<int> up = upcoming();
+		std::wstring nextTitle = current >= 0 && !up.empty() ? queue[up.front()].title : L"Nothing queued";
 		float textW = g.textWidth(nextTitle, 13, Font::Ui);
 		if (textW > 160) textW = 160;
 		if (textW < 50) textW = 50;

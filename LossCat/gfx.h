@@ -62,7 +62,7 @@ public:
 	// (geometries are cached by pointer).
 	void icon(const char* path, const Rect& box, uint32_t rgb, bool filled, float strokeWidth = 1.5f, float alpha = 1);
 
-	ComPtr<ID2D1Bitmap> loadImage(const std::vector<unsigned char>& bytes);
+	ComPtr<ID2D1Bitmap> loadImage(const std::vector<unsigned char>& bytes, UINT maxPixels = 0);   // 0 = full size
 	void image(ID2D1Bitmap* bmp, const Rect& r, float radius);
 
 	void pushClip(const Rect& r);

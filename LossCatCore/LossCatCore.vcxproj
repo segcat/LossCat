@@ -68,10 +68,12 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="library.cpp" />
     <ClCompile Include="miniaudio_impl.cpp" />
     <ClCompile Include="trackinfo.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="library.h" />
     <ClInclude Include="player.h" />
     <ClInclude Include="trackinfo.h" />
   </ItemGroup>

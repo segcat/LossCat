@@ -394,7 +394,7 @@ void Gfx::icon(const char* path, const Rect& box, uint32_t rgb, bool filled, flo
 	target->SetTransform(D2D1::Matrix3x2F::Identity());
 }
 
-ComPtr<ID2D1Bitmap> Gfx::loadImage(const std::vector<unsigned char>& bytes)
+ComPtr<ID2D1Bitmap> Gfx::loadImage(const std::vector<unsigned char>& bytes, UINT maxPixels)
 {
 	ComPtr<ID2D1Bitmap> bmp;
 	if (!wic || bytes.empty() || !target) return bmp;
@@ -406,8 +406,23 @@ ComPtr<ID2D1Bitmap> Gfx::loadImage(const std::vector<unsigned char>& bytes)
 	if (FAILED(stream->InitializeFromMemory(const_cast<BYTE*>(bytes.data()), (DWORD)bytes.size()))) return bmp;
 	if (FAILED(wic->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnLoad, &decoder))) return bmp;
 	if (FAILED(decoder->GetFrame(0, &frame))) return bmp;
+	// Decode straight to the size it will be shown at: a 3000 px scan is 36 MB decoded, 300 px is 0.4 MB.
+	ComPtr<IWICBitmapSource> source = frame;
+	UINT w = 0, h = 0;
+	frame->GetSize(&w, &h);
+	if (maxPixels > 0 && (w > maxPixels || h > maxPixels))
+	{
+		ComPtr<IWICBitmapScaler> scaler;
+		UINT sw = w >= h ? maxPixels : (UINT)((double)w * maxPixels / h);
+		UINT sh = h >= w ? maxPixels : (UINT)((double)h * maxPixels / w);
+		if (SUCCEEDED(wic->CreateBitmapScaler(&scaler)) &&
+			SUCCEEDED(scaler->Initialize(frame.Get(), sw ? sw : 1, sh ? sh : 1, WICBitmapInterpolationModeFant)))
+		{
+			source = scaler;
+		}
+	}
 	if (FAILED(wic->CreateFormatConverter(&conv))) return bmp;
-	if (FAILED(conv->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone,
+	if (FAILED(conv->Initialize(source.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone,
 		nullptr, 0.0, WICBitmapPaletteTypeCustom))) return bmp;
 	target->CreateBitmapFromWicBitmap(conv.Get(), nullptr, &bmp);
 	return bmp;
