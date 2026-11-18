@@ -24,6 +24,18 @@
     <ClCompile Include="trackinfo.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="asio_output.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\third_party\asiosdk\common\asio.cpp">
+      <Filter>third_party</Filter>
+    </ClCompile>
+    <ClCompile Include="..\third_party\asiosdk\host\asiodrivers.cpp">
+      <Filter>third_party</Filter>
+    </ClCompile>
+    <ClCompile Include="..\third_party\asiosdk\host\pc\asiolist.cpp">
+      <Filter>third_party</Filter>
+    </ClCompile>
     <ClCompile Include="library.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -33,6 +45,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="player.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="asio_output.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="trackinfo.h">

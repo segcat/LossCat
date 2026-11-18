@@ -12,7 +12,7 @@ LossCat is an early-stage project. The basics are in place, but there are still 
 - Keeps playlists and Favourites in `.m3u8` files, plus a **Lossless 24-bit** smart playlist that fills itself from your library.
 - Shows cover art, lyrics and audio details from file tags, with the album's other songs on Now playing.
 - Lets you set album covers and lyrics, and saves them into the song files' tags.
-- Shows the source and output sample rates, including whether resampling is happening.
+- Plays bit-perfect through WASAPI exclusive mode or ASIO, and shows whether the output is bit-perfect, resampled or converted.
 - Remembers your volume, queue, position and recently played songs between sessions.
 - Includes a queue, shuffle, repeat and media-key controls.
 - Supports Unicode file paths.
@@ -81,7 +81,6 @@ vcpkg restores TagLib from the manifest. The first build may take longer while d
 
 ## Current limitations
 
-- Playback uses shared-mode audio; there is no exclusive mode.
 - Audio-device changes may require restarting the app.
 - OGG, Opus and M4A files show up in the library but can't be played yet.
 - There's no search yet.
@@ -98,5 +97,10 @@ vcpkg restores TagLib from the manifest. The first build may take longer while d
 - [TagLib](https://github.com/taglib/taglib) — metadata and cover art. LGPL 2.1 or MPL 1.1.
 - [zlib](https://zlib.net) — compression, used by TagLib. zlib License.
 - [UTF8-CPP](https://github.com/nemtrif/utfcpp) — text encoding, used by TagLib. Boost Software License 1.0.
+- [ASIO SDK](https://www.steinberg.net/developers/) by Steinberg — ASIO output. GPLv3. ASIO is a trademark and software of Steinberg Media Technologies GmbH.
+
+## License
+
+LossCat is free software under the [GNU General Public License v3](LICENSE). Versions up to 0.2.1 were released under the MIT License.
 
 © 2026 SegCat
