@@ -129,7 +129,7 @@ bool App::create(HINSTANCE inst, int show)
 	if (audioOk) player.setVolume(volume);
 	else error = L"No audio output device";
 
-	for (float* v : { &pageScroll, &listScroll, &sideScroll, &lyricScroll, &nowAlbumScroll })
+	for (float* v : { &pageScroll, &listScroll, &sideScroll, &lyricScroll, &nowAlbumScroll, &queueScroll })
 		smooths.push_back({ v, *v, *v });
 	loadState();   // also opens the library
 
@@ -276,6 +276,23 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 			TrackMouseEvent(&tme);
 			tracking = true;
 		}
+		if (qDragItem >= 0)
+		{
+			if (!qDragging && std::fabs(y - qPressY) > 5) qDragging = true;
+			if (qDragging)
+			{
+				qDropSlot = queueSlotAt(y);
+				// near the panel's top or bottom edge, scroll it so far songs can be reached
+				if (qDragList == 1 && queueList.h > 0)
+				{
+					if (y < queueList.y + 30) queueScroll = std::max(0.0f, queueScroll - 8);
+					else if (y > queueList.bottom() - 30) queueScroll = std::min(queueMaxScroll, queueScroll + 8);
+					for (Smooth& sm : smooths) if (sm.value == &queueScroll) sm.target = sm.last = queueScroll;
+				}
+				InvalidateRect(hwnd, nullptr, FALSE);
+				return 0;
+			}
+		}
 		if (selectingLyrics)
 		{
 			lyricSelB = lyricLineAt(y);
@@ -334,6 +351,11 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 			InvalidateRect(hwnd, nullptr, FALSE);
 			return 0;
 		}
+		if (pressHit == Hit::QueueRow && pressIndex != current)
+		{
+			for (const QRow& r : qRows)
+				if (r.qi == pressIndex && r.r.contains(x, y)) { qDragItem = r.qi; qDragList = r.list; qPressY = y; qDropSlot = -1; SetCapture(hwnd); }
+		}
 		if (pressHit == Hit::LyricLine)
 		{
 			lyricSelA = lyricSelB = pressIndex;
@@ -363,6 +385,21 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 	case WM_LBUTTONUP:
 	{
 		float x = GET_X_LPARAM(lp) / scale, y = GET_Y_LPARAM(lp) / scale;
+		if (qDragItem >= 0)
+		{
+			int item = qDragItem;
+			bool moved = qDragging;
+			qDragItem = -1;
+			qDragging = false;
+			ReleaseCapture();
+			if (moved)
+			{
+				moveQueued(item, qDropSlot);
+				pressHit = Hit::None;
+				InvalidateRect(hwnd, nullptr, FALSE);
+				return 0;
+			}
+		}
 		if (selectingLyrics)
 		{
 			selectingLyrics = false;
@@ -394,6 +431,7 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 			float step = delta / 120.0f * 90.0f;
 			bool precise = delta % 120 != 0;   // touchpads send small steps; follow them directly
 			if (sideList.contains(x, y)) wheelScroll(sideScroll, sideMaxScroll, step, precise);
+			else if (queueList.contains(x, y)) wheelScroll(queueScroll, queueMaxScroll, step, precise);
 			else if (page == Page::Now && npTab == 1 && nowAlbumArea.contains(x, y)) wheelScroll(nowAlbumScroll, nowAlbumMaxScroll, step, precise);
 			else if (page == Page::Now && npTab == 2 && lyricArea.contains(x, y)) wheelScroll(lyricScroll, lyricMaxScroll, step, precise);
 			else if (listArea.contains(x, y)) wheelScroll(listScroll, listMaxScroll, step, precise);
@@ -431,6 +469,14 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 			else if (wp == VK_ESCAPE) click(Hit::ConfirmCancel, -1);
 			return 0;
 		}
+		if (qDragging && wp == VK_ESCAPE)
+		{
+			qDragItem = -1; qDragging = false; ReleaseCapture();
+			pressHit = Hit::None;
+			InvalidateRect(hwnd, nullptr, FALSE);
+			return 0;
+		}
+		if (ctrl && wp == 'Z' && hasUndo) { undoQueue(); return 0; }
 		if (menuOpen && wp == VK_ESCAPE) { menuOpen = false; InvalidateRect(hwnd, nullptr, FALSE); return 0; }
 		bool onLyrics = page == Page::Now && npTab == 2 && current >= 0;
 		if (onLyrics && ctrl && wp == 'C') { copyLyrics(); return 0; }
@@ -502,6 +548,15 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 		return 0;
 	case WM_TIMER:
 		if (wp == 2 || wp == 3) { InvalidateRect(hwnd, nullptr, FALSE); return 0; }   // marquee text, scan progress
+		if (wp == 4)   // the undo note has been up long enough
+		{
+			KillTimer(hwnd, 4);
+			hasUndo = false;
+			toastText.clear();
+			undoSnap = {};
+			InvalidateRect(hwnd, nullptr, FALSE);
+			return 0;
+		}
 		tick();
 		return 0;
 	case WM_IMPORT_DONE:
@@ -643,6 +698,12 @@ void App::click(Hit id, int index)
 				++plVersion;
 				break;
 			}
+			if (act == Act::PlayNow) { playIndex(arg); break; }
+			if (act == Act::MoveNext) { moveQueued(arg, 0); break; }
+			if (act == Act::MoveEnd) { moveQueued(arg, (int)upcoming().size()); break; }
+			if (act == Act::RemoveQueued) { if (arg >= 0 && arg < (int)queue.size()) removeQueued({ arg }, L"Removed \u201C" + queue[arg].title + L"\u201D"); break; }
+			if (act == Act::ClearUpNext) { click(Hit::QueueClear, -1); break; }
+			if (act == Act::PlayNext || act == Act::AddToQueue) { enqueue(paths, act == Act::PlayNext); break; }
 			if (act == Act::PlayPlaylist) { playPlaylist(arg, 0, false); break; }
 			if (act == Act::RenamePlaylist) { startRename(arg); break; }
 			if (act == Act::DeletePlaylist)
@@ -815,6 +876,14 @@ void App::click(Hit id, int index)
 		break;
 	case Hit::OpenFiles: openFileDialog(); break;
 	case Hit::QueueRow: playIndex(index); break;
+	case Hit::QueueRemove: if (index >= 0 && index < (int)queue.size()) removeQueued({ index }, L"Removed \u201C" + queue[index].title + L"\u201D"); break;
+	case Hit::QueueClear:
+	{
+		std::vector<int> up = upcoming();
+		if (!up.empty()) removeQueued(up, up.size() == 1 ? L"Cleared 1 song" : L"Cleared " + std::to_wstring(up.size()) + L" songs");
+		break;
+	}
+	case Hit::QueueUndo: undoQueue(); break;
 	case Hit::LibraryRow: playFromLibrary(index); break;
 	case Hit::OpenLibraryFolder:
 		if (!libraryDir.empty()) ShellExecuteW(hwnd, L"open", libraryDir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
@@ -1272,6 +1341,8 @@ void App::openMenu(Hit target, int index, float x, float y)
 	{
 		for (int i : group->tracks) menuPaths.push_back(libTracks[i].path);
 		menu.push_back({ target == Hit::AlbumTile ? L"Play album" : L"Play all songs", Act::Play, false });
+		menu.push_back({ L"Play next", Act::PlayNext, false });
+		menu.push_back({ L"Add to queue", Act::AddToQueue, false });
 		if (target == Hit::AlbumTile) menu.push_back({ L"Set album cover\x2026", Act::SetCover, false });
 		menu.push_back({ L"Add to playlist\x2026", Act::PlaylistMenu, false });
 		menu.push_back({ target == Hit::AlbumTile ? L"Remove album from library" : L"Remove artist from library", Act::Remove, true });
@@ -1282,7 +1353,21 @@ void App::openMenu(Hit target, int index, float x, float y)
 		if (p.empty()) { if (menuOpen) { menuOpen = false; InvalidateRect(hwnd, nullptr, FALSE); } return; }
 		menuPaths.push_back(p);
 		bool fromNow = target == Hit::NowMore;   // Now playing already has Play, Favourite and Add to library buttons
-		if (!fromNow) menu.push_back({ L"Play", Act::Play, false });
+		if (target == Hit::QueueRow && index >= 0 && index != current)
+		{
+			menu.push_back({ L"Play now", Act::PlayNow, false, index });
+			menu.push_back({ L"Play next", Act::MoveNext, false, index });
+			menu.push_back({ L"Move to end", Act::MoveEnd, false, index });
+			menu.push_back({ L"Remove from queue", Act::RemoveQueued, false, index });
+			menu.push_back({ L"Clear up next", Act::ClearUpNext, false });
+			menu.push_back({ L"", Act::Play, false, -2, Look::Separator });
+		}
+		else if (!fromNow && target != Hit::QueueRow) menu.push_back({ L"Play", Act::Play, false });
+		if (!fromNow && target != Hit::QueueRow)
+		{
+			menu.push_back({ L"Play next", Act::PlayNext, false });
+			menu.push_back({ L"Add to queue", Act::AddToQueue, false });
+		}
 		if (inLibrary(p))
 		{
 			bool fav = inPlaylist(0, p);
@@ -1969,6 +2054,103 @@ void App::rebuildOrder()
 	{
 		orderPos = current;
 	}
+}
+
+void App::moveQueued(int qi, int slot)
+{
+	ensureOrder();
+	std::vector<int> up = upcoming();
+	int p = (int)(std::find(up.begin(), up.end(), qi) - up.begin());
+	if (p >= (int)up.size() || slot < 0 || slot > (int)up.size() || slot == p || slot == p + 1) return;
+	int base = orderPos + 1;
+	int from = base + p, to = base + slot;
+	order.erase(order.begin() + from);
+	if (from < to) --to;
+	order.insert(order.begin() + to, qi);
+	InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+void App::removeQueued(std::vector<int> qis, const std::wstring& what)
+{
+	ensureOrder();
+	undoSnap = { queue, order, current, current >= 0 ? queue[current].path : L"" };
+	std::sort(qis.rbegin(), qis.rend());
+	for (int qi : qis)
+	{
+		if (qi == current || qi < 0 || qi >= (int)queue.size()) continue;
+		auto it = std::find(order.begin(), order.end(), qi);
+		if (it != order.end()) order.erase(it);
+		queue.erase(queue.begin() + qi);
+		for (int& o : order) if (o > qi) --o;
+		if (current > qi) --current;
+	}
+	if (current >= 0) orderPos = (int)(std::find(order.begin(), order.end(), current) - order.begin());
+	hasUndo = true;
+	toastText = what;
+	SetTimer(hwnd, 4, 6000, nullptr);
+	InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+void App::undoQueue()
+{
+	if (!hasUndo) return;
+	// Only if the same song is still playing; otherwise the old order no longer fits.
+	std::wstring now = current >= 0 ? queue[current].path : L"";
+	if (now == undoSnap.path)
+	{
+		queue = std::move(undoSnap.queue);
+		order = std::move(undoSnap.order);
+		current = undoSnap.current;
+		if (current >= 0) orderPos = (int)(std::find(order.begin(), order.end(), current) - order.begin());
+	}
+	hasUndo = false;
+	toastText.clear();
+	undoSnap = {};
+	KillTimer(hwnd, 4);
+	InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+int App::queueSlotAt(float y) const
+{
+	int last = -1;
+	for (const QRow& r : qRows)
+	{
+		if (r.list != qDragList) continue;
+		if (y < r.r.cy()) return r.up;
+		last = r.up + 1;
+	}
+	return last;
+}
+
+void App::enqueue(const std::vector<std::wstring>& paths, bool playNext)
+{
+	if (paths.empty()) return;
+	ensureOrder();
+	bool idle = current < 0;
+	int first = (int)queue.size();
+	for (const auto& p : paths)
+	{
+		auto it = std::find_if(libTracks.begin(), libTracks.end(), [&](const Track& t) { return t.path == p; });
+		if (it != libTracks.end()) queue.push_back(*it);
+		else
+		{
+			DWORD attr = GetFileAttributesW(p.c_str());
+			if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) continue;
+			queue.push_back(makeTrack(p, readTrackInfo(fsPath(p)), true));
+		}
+	}
+	// New songs go into the play order as they are, even with shuffle on: you chose where they go.
+	// Play next: straight after the current song. Add to queue: after the current song and after
+	// anything you queued before, but ahead of the rest of the album or playlist.
+	std::vector<int> added;
+	for (int i = first; i < (int)queue.size(); ++i) { added.push_back(i); queue[i].queued = true; }
+	size_t at = orderPos >= 0 ? (size_t)orderPos + 1 : 0;
+	if (at > order.size()) at = order.size();
+	if (!playNext)
+		while (at < order.size() && queue[order[at]].queued) ++at;
+	order.insert(order.begin() + at, added.begin(), added.end());
+	if (idle && !added.empty()) playIndex(added.front());
+	InvalidateRect(hwnd, nullptr, FALSE);
 }
 
 void App::ensureOrder()

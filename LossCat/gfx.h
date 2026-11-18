@@ -64,7 +64,7 @@ public:
 	void icon(const char* path, const Rect& box, uint32_t rgb, bool filled, float strokeWidth = 1.5f, float alpha = 1);
 
 	ComPtr<ID2D1Bitmap> loadImage(const std::vector<unsigned char>& bytes, UINT maxPixels = 0);   // 0 = full size
-	void image(ID2D1Bitmap* bmp, const Rect& r, float radius);
+	void image(ID2D1Bitmap* bmp, const Rect& r, float radius, bool squareRight = false);   // squareRight: round the left corners only
 	// Re-encode as JPEG no larger than maxPixels on a side; returns the input if it is already small.
 	std::vector<unsigned char> shrinkImage(const std::vector<unsigned char>& bytes, UINT maxPixels);
 

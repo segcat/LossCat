@@ -130,7 +130,7 @@ double nowMs()
 bool App::animating() const
 {
 	double now = nowMs();
-	return scrollMoving || (navStart > 0 && now - navStart < 700) || (queueStart > 0 && now - queueStart < 320);
+	return scrollMoving || animMoving || (navStart > 0 && now - navStart < 700) || (queueStart > 0 && now - queueStart < 320);
 }
 
 void App::animValues(float& geo, float& labels, float& q) const
@@ -152,6 +152,21 @@ void App::animValues(float& geo, float& labels, float& q) const
 	float qe = queueStart > 0 ? (float)(now - queueStart) : 10000.0f;
 	q = queueOpen ? lerp(queueFrom, 1, easeDrawer(clamp01(qe / 280.0f)))
 		: lerp(queueFrom, 0, easeOut(clamp01(qe / 180.0f)));
+}
+
+float App::anim(Hit id, int index, bool on)
+{
+	AnimState& a = anims[((long long)id << 32) | (unsigned)(index + 2)];
+	double now = nowMs();
+	float dt = a.t > 0 ? (float)(now - a.t) : 16.0f;
+	if (dt > 50) dt = 50;
+	a.t = now;
+	float target = on ? 1.0f : 0.0f;
+	float step = dt / (on ? 90.0f : 160.0f);   // in quickly, out a little slower
+	if (a.value < target) a.value = std::min(target, a.value + step);
+	else if (a.value > target) a.value = std::max(target, a.value - step);
+	if (a.value != target) animMoving = true;
+	return a.value * a.value * (3 - 2 * a.value);   // smoothstep
 }
 
 // ---------------------------------------------------------------- hit registry
@@ -200,9 +215,12 @@ void App::paint()
 {
 	layout();
 	stepScroll();
+	animMoving = false;
+	if (anims.size() > 4000) anims.clear();
 	if (!g.begin()) return;
 	++frameNo;
 	hots.clear();
+	qRows.clear();
 	tipText.clear();
 	marqueeActive = false;
 	g.clear(col::base);
@@ -211,6 +229,8 @@ void App::paint()
 	drawQueuePanel();
 	drawWindowControls({ 8, 8, W - 16, H - 104 });   // always in the window's top-right corner
 	drawPlayerBar();
+	drawToast();
+	drawDragGhost();
 	if (!menuOpen && !confirmOpen) drawTip();
 	if (menuOpen) drawMenu();
 	if (confirmOpen) drawConfirm();
@@ -1412,22 +1432,49 @@ void App::drawNowPlaying(const Rect& a)
 	if (npTab == 0)
 	{
 		bool any = false;
+		int upPos = 0;
 		for (int i : upcoming())
 		{
 			if (y + 46 > a.bottom()) break;
 			const Track& q = queue[i];
 			Rect r{ x - 10, y, w + 10, 46 };
-			if (hovered(Hit::QueueRow, i)) g.fill(r, col::hover, 2);
-			if (ID2D1Bitmap* b = coverOf(q.path)) g.image(b, { x, y + 3, 40, 40 }, 2);
-			else g.fill({ x, y + 3, 40, 40 }, col::tile, 2);
-			g.text(q.title, { x + 52, y + 6, w - 52 - 56, 18 }, 13, Font::UiMedium, col::text);
-			g.text(q.artist, { x + 52, y + 24, w - 52 - 56, 16 }, 12, Font::Ui, col::soft);
-			g.text(fmtTime(q.info.durationMs / 1000.0), { x + w - 54, y, 44, 46 }, 12, Font::Mono, col::soft, Align::Right);
+			bool held = qDragging && qDragItem == i;
+			bool hov = !qDragging && hovered(Hit::QueueRow, i), hovX = !qDragging && hovered(Hit::QueueRemove, i);
+			if (held) g.fill(r, col::selected, 2);
+			else if (hov || hovX) g.fill(r, col::hover, 2);
+			Rect cvr{ x, y + 3, 40, 40 };
+			if (ID2D1Bitmap* b = coverOf(q.path)) g.image(b, cvr, 2);
+			else g.fill(cvr, col::tile, 2);
+			if (hov || hovX || held)
+			{
+				g.fill(cvr, 0x000000, 2, 0.55f);
+				for (int gy = 0; gy < 3; ++gy)
+					for (int gx = 0; gx < 2; ++gx)
+						g.circle(cvr.cx() - 3 + gx * 6, cvr.cy() - 6 + gy * 6, 1.4f, col::white);
+			}
+			g.text(q.title, { x + 52, y + 6, w - 52 - 56, 18 }, 13, Font::UiMedium, held ? col::muted : col::text);
+			g.text(q.artist, { x + 52, y + 24, w - 52 - 56, 16 }, 12, Font::Ui, held ? col::muted : col::soft);
+			Rect xb{ x + w - 34, y + 9, 28, 28 };
+			if (hov || hovX)
+			{
+				if (hovX) g.fill(xb, col::ctlHover, 14);
+				g.icon(icons::close, { xb.cx() - 7, xb.cy() - 7, 14, 14 }, hovX ? col::white : col::soft, false, 1.8f);
+			}
+			else g.text(fmtTime(q.info.durationMs / 1000.0), { x + w - 54, y, 44, 46 }, 12, Font::Mono, col::soft, Align::Right);
 			hot(r, Hit::QueueRow, i);
+			hot(xb, Hit::QueueRemove, i);
+			qRows.push_back({ i, upPos++, 2, r });
 			y += 46;
 			any = true;
 		}
-		if (!any) g.text(L"Nothing queued. Drop more files to add them.", { x, y + 4, w, 20 }, 13, Font::Ui, col::muted);
+		if (qDragging && qDragList == 2 && qDropSlot >= 0)
+		{
+			float ly = -1;
+			for (const QRow& r : qRows) if (r.list == 2 && r.up == qDropSlot) ly = r.r.y;
+			if (ly < 0) for (const QRow& r : qRows) if (r.list == 2) ly = r.r.bottom();
+			if (ly >= 0) { g.fill({ x - 6, ly - 1, w + 2, 2 }, col::text, 1); g.circle(x - 6, ly, 3.5f, col::text); }
+		}
+		if (!any) g.text(L"Nothing queued. Right-click a song and pick Play next or Add to queue.", { x, y + 4, w, 20 }, 13, Font::Ui, col::muted);
 	}
 	else if (npTab == 1)
 	{
@@ -1851,51 +1898,141 @@ void App::drawQueuePanel()
 	hot({ q.x, q.y + 20, q.w, q.h - 20 }, Hit::Panel);   // below the drag strip, the panel isn't a drag area
 	y += 32 + 18;
 
+	// Everything under the title scrolls.
+	queueList = { q.x, y, q.w, q.bottom() - y - 8 };
+	if (queueScroll > queueMaxScroll) queueScroll = queueMaxScroll;
+	float top = y;
+	y -= queueScroll;
+	g.pushClip(queueList);
+	auto visible = [&](const Rect& r) {
+		Rect v{ r.x, std::max(r.y, queueList.y), r.w, std::min(r.bottom(), queueList.bottom()) - std::max(r.y, queueList.y) };
+		return v;
+	};
+
 	auto header = [&](const wchar_t* s) {
 		g.text(s, { x + 12, y, w - 24, 24 }, 12, Font::Ui, col::muted);
 		y += 30;
 	};
+	int upPos = 0;
 	auto row = [&](int i, bool isCurrent) {
 		const Track& t = queue[i];
 		Rect r{ x, y, w, 48 };
-		if (isCurrent) g.fill(r, col::selected, 3);
-		else if (hovered(Hit::QueueRow, i)) g.fill(r, col::hover, 3);
-		if (ID2D1Bitmap* b = coverOf(t.path)) g.image(b, { x + 6, y + 6, 36, 36 }, 2);
-		else g.fill({ x + 6, y + 6, 36, 36 }, col::tile, 2);
-		float tx = x + 6 + 36 + 12, tw = w - (tx - x) - 52;
-		g.text(t.title, { tx, y + 7, tw, 18 }, 13, isCurrent ? Font::UiMedium : Font::Ui, isCurrent ? col::white : col::text);
-		g.text(t.artist, { tx, y + 25, tw, 16 }, 12, Font::Ui, col::dim);
-		g.text(fmtTime(t.info.durationMs / 1000.0), { x + w - 52, y, 42, 48 }, 12, Font::Mono, col::dim, Align::Right);
-		hot(r, Hit::QueueRow, i);
+		bool onScreen = r.bottom() > queueList.y && r.y < queueList.bottom();
+		bool held = qDragging && qDragItem == i;
+		bool hov = !qDragging && hovered(Hit::QueueRow, i);
+		bool hovX = !qDragging && hovered(Hit::QueueRemove, i);
+		if (onScreen)
+		{
+			if (isCurrent || held) g.fill(r, col::selected, 3);
+			else if (hov || hovX) g.fill(r, col::hover, 3);
+			Rect cvr{ x + 6, y + 6, 36, 36 };
+			if (ID2D1Bitmap* b = coverOf(t.path)) g.image(b, cvr, 2);
+			else g.fill(cvr, col::tile, 2);
+			if (!isCurrent && (hov || hovX || held))
+			{
+				// grip over the cover: this row can be dragged
+				g.fill(cvr, 0x000000, 2, 0.55f);
+				for (int gy = 0; gy < 3; ++gy)
+					for (int gx = 0; gx < 2; ++gx)
+						g.circle(cvr.cx() - 3 + gx * 6, cvr.cy() - 6 + gy * 6, 1.4f, col::white);
+			}
+			float tx = x + 6 + 36 + 12, tw = w - (tx - x) - 52;
+			uint32_t tc = held ? col::muted : isCurrent ? col::white : col::text;
+			g.text(t.title, { tx, y + 7, tw, 18 }, 13, isCurrent ? Font::UiMedium : Font::Ui, tc);
+			g.text(t.artist, { tx, y + 25, tw, 16 }, 12, Font::Ui, held ? col::muted : col::dim);
+			if (!isCurrent && (hov || hovX))
+			{
+				Rect xb{ x + w - 38, y + 10, 28, 28 };
+				if (hovX) g.fill(xb, col::ctlHover, 14);
+				g.icon(icons::close, { xb.cx() - 7, xb.cy() - 7, 14, 14 }, hovX ? col::white : col::soft, false, 1.8f);
+			}
+			else g.text(fmtTime(t.info.durationMs / 1000.0), { x + w - 52, y, 42, 48 }, 12, Font::Mono, col::dim, Align::Right);
+			hot(visible(r), Hit::QueueRow, i);
+			if (!isCurrent) hot(visible({ x + w - 38, y + 10, 28, 28 }), Hit::QueueRemove, i);
+		}
+		if (!isCurrent) qRows.push_back({ i, upPos++, 1, r });
 		y += 48 + 2;
 	};
 
 	if (current < 0)
 	{
 		g.text(L"The queue is empty.", { x + 12, y, w - 24, 20 }, 13, Font::Ui, col::muted);
+		g.text(L"Right-click a song and pick Play next or Add to queue.", { x + 12, y + 22, w - 24, 40 }, 12, Font::Ui, col::dim);
 	}
 	else
 	{
 		header(L"Now playing");
 		row(current, true);
 		y += 16;
-		header(L"Up next");
 		std::vector<int> up = upcoming();
+		{
+			// "Up next" with Clear on the right
+			g.text(L"Up next", { x + 12, y, w - 24, 24 }, 12, Font::Ui, col::muted);
+			if (!up.empty())
+			{
+				float cw = g.textWidth(L"Clear", 12, Font::Ui) + 16;
+				Rect cb{ x + w - cw - 4, y - 2, cw, 26 };
+				bool ch = hovered(Hit::QueueClear);
+				if (ch) g.fill(cb, col::ctlHover, 13);
+				g.text(L"Clear", cb, 12, Font::Ui, ch ? col::white : col::dim, Align::Center);
+				if (cb.bottom() > queueList.y) hot(visible(cb), Hit::QueueClear, -1);
+			}
+			y += 30;
+		}
 		if (up.empty())
 			g.text(L"Nothing queued", { x + 12, y, w - 24, 20 }, 13, Font::Ui, col::muted);
-		for (int i : up)
+		for (int i : up) row(i, false);
+		// where a dragged song will land
+		if (qDragging && qDragList == 1 && qDropSlot >= 0)
 		{
-			if (y + 48 > q.bottom() - 12) break;
-			row(i, false);
+			float ly = -1;
+			for (const QRow& r : qRows) if (r.list == 1 && r.up == qDropSlot) ly = r.r.y - 1;
+			if (ly < 0 && !qRows.empty()) ly = qRows.back().r.bottom() + 1;
+			if (ly >= 0) { g.fill({ x + 4, ly - 1, w - 8, 2 }, col::text, 1); g.circle(x + 4, ly, 3.5f, col::text); }
 		}
 	}
+	queueMaxScroll = std::max(0.0f, (y + queueScroll) - top + 12 - queueList.h);
+	g.popClip();
 	g.popClip();
 }
 
 
+void App::drawToast()
+{
+	if (toastText.empty()) return;
+	float tw = std::min(g.textWidth(toastText, 13, Font::Ui), W * 0.5f);
+	float uw = g.textWidth(L"Undo", 13, Font::UiMedium) + 24;
+	float w = 18 + tw + 16 + uw + 8;
+	Rect r{ (W - w) / 2, playerBar.y - 48, w, 40 };
+	g.fill({ r.x, r.y + 2, r.w, r.h }, 0x000000, 8, 0.35f);
+	g.fill(r, 0x262626, 8);
+	g.stroke(r, 0x333333, 8);
+	g.text(toastText, { r.x + 18, r.y, tw + 2, r.h }, 13, Font::Ui, col::text);
+	Rect ub{ r.right() - uw - 6, r.y + 6, uw, 28 };
+	bool uh = hovered(Hit::QueueUndo);
+	g.fill(ub, uh ? 0x3A3A3A : 0x303030, 14);
+	g.text(L"Undo", ub, 13, Font::UiMedium, col::white, Align::Center);
+	hot(r, Hit::Panel);
+	hot(ub, Hit::QueueUndo);
+}
+
+void App::drawDragGhost()
+{
+	if (!qDragging || qDragItem < 0 || qDragItem >= (int)queue.size()) return;
+	const Track& t = queue[qDragItem];
+	float tw = std::min(g.textWidth(t.title, 13, Font::UiMedium), 220.0f);
+	Rect r{ mouseX + 14, mouseY - 16, tw + 54, 32 };
+	g.fill({ r.x, r.y + 2, r.w, r.h }, 0x000000, 6, 0.35f);
+	g.fill(r, 0x2A2A2A, 6);
+	g.stroke(r, 0x3A3A3A, 6);
+	if (ID2D1Bitmap* b = coverOf(t.path)) g.image(b, { r.x + 5, r.y + 5, 22, 22 }, 2);
+	else g.fill({ r.x + 5, r.y + 5, 22, 22 }, col::tile, 2);
+	g.text(t.title, { r.x + 36, r.y, tw + 2, r.h }, 13, Font::UiMedium, col::text);
+}
+
 void App::drawMenu()
 {
-	auto itemH = [](const MenuEntry& m) { return m.look == Look::Heading ? 28.0f : m.look == Look::Action ? 32.0f + 9.0f : 32.0f; };
+	auto itemH = [](const MenuEntry& m) { return m.look == Look::Separator ? 9.0f : m.look == Look::Heading ? 28.0f : m.look == Look::Action ? 32.0f + 9.0f : 32.0f; };
 	float w = 0, h = 8;
 	for (const MenuEntry& m : menu)
 	{
@@ -1915,6 +2052,12 @@ void App::drawMenu()
 	for (int i = 0; i < (int)menu.size(); ++i)
 	{
 		const MenuEntry& m = menu[i];
+		if (m.look == Look::Separator)
+		{
+			g.line(r.x + 8, iy + 4.5f, r.right() - 8, iy + 4.5f, 0x333333, 1);
+			iy += 9;
+			continue;
+		}
 		if (m.look == Look::Heading)
 		{
 			g.text(m.label, { r.x + 16, iy + 4, r.w - 32, 24 }, 12, Font::Ui, col::muted);
@@ -1979,28 +2122,30 @@ void App::drawConfirm()
 
 void App::drawPlayerBar()
 {
-	// A floating card: cover and song on the left, controls and seek bar in the middle,
-	// queue and volume on the right.
+	// A floating island. Left: the cover filling the island's end, title, artist, format.
+	// Middle: previous / play / next, then the seek bar in the same line.
+	// Right: shuffle, repeat | queue, output device, volume.
 	const Rect& b = playerBar;
 	Rect card{ 8, b.y + 8, W - 16, b.h - 16 };
 	g.fill(card, col::panel, 10);
-	g.stroke(card, col::line, 10);
 	hot(card, Hit::Panel);
 	float cy = card.cy();
 	bool showRight = W >= 900;
-	float centerW = W * 0.4f;
-	if (centerW > 520) centerW = 520;
-	if (!showRight) centerW = W * 0.45f;
-	Rect colC{ card.cx() - centerW / 2, card.y, centerW, card.h };
 	bool hasTrack = current >= 0;
 	State st = player.getState();
 
-	// left: cover, title with the heart, artist, format
-	Rect cv{ card.x + 8, cy - 32, 64, 64 };
-	if (ID2D1Bitmap* bmp = currentCover()) g.image(bmp, cv, 6);
-	else g.fill(cv, hasTrack ? col::tile : 0x222222, 6);
+	Rect cv{ card.x + 1, card.y + 1, card.h - 2, card.h - 2 };
+	if (ID2D1Bitmap* bmp = currentCover()) g.image(bmp, cv, 9, true);
+	else
+	{
+		uint32_t c = hasTrack ? col::tile : 0x222222;   // same shape as a cover: left corners round
+		g.fill(cv, c, 9);
+		g.fill({ cv.cx(), cv.y, cv.w / 2, cv.h }, c, 0);
+	}
+	g.stroke(card, col::line, 10);
 	hot(cv, Hit::Cover);
-	float tx = cv.right() + 14, tw = colC.x - 24 - tx;
+	float leftEnd = card.x + (W >= 1100 ? 300.0f : W >= 900 ? 250.0f : 210.0f);
+	float tx = cv.right() + 14, tw = leftEnd - tx;
 	if (hasTrack)
 	{
 		const Track& t = queue[current];
@@ -2020,16 +2165,19 @@ void App::drawPlayerBar()
 		g.text(t.artist, { tx, cy - 8, tw, 16 }, 12, Font::Ui, col::dim);
 
 		// the signal path in one line: the file's format, then what the device gets
-		float py = cy + 12;
-		std::wstring src = signalSource();
-		float chipW = g.textWidth(src, 10, Font::Mono) + 12;
-		Rect chip{ tx, py, chipW, 17 };
-		g.stroke(chip, hovered(Hit::SignalPath) ? 0x5A5A5A : col::chip, 3);
-		g.text(src, chip, 10, Font::Mono, col::soft, Align::Center);
-		bool same = t.info.sampleRate == (int)player.outputSampleRate();
-		std::wstring out = L"\x2192 " + signalOutput() + (same ? L", not resampled" : L", resampled");
-		g.text(out, { chip.right() + 6, py, tx + tw - chip.right() - 6, 17 }, 10, Font::Mono, col::dim);
-		hot({ tx, py, std::min(tw, chipW + 6 + g.textWidth(out, 10, Font::Mono)), 17 }, Hit::SignalPath);
+		// Quiet plain text: "FLAC · 24-bit · 44.1 kHz", the rate showing "96 → 48 kHz" when resampled,
+		// in quiet plain text.
+		float py = cy + 13;
+		const TrackInfo& fi = t.info;
+		std::wstring line = codecOf(t.path);
+		if (fi.bitsPerSample) line += L" \x00B7 " + std::to_wstring(fi.bitsPerSample) + L"-bit";
+		int outRate = (int)player.outputSampleRate();
+		if (fi.sampleRate)
+			line += L" \x00B7 " + (outRate && outRate != fi.sampleRate ? fmtRate(fi.sampleRate) + L" \x2192 " + fmtRate(outRate) : fmtRate(fi.sampleRate)) + L" kHz";
+		bool sh = hovered(Hit::SignalPath);
+		float lw = g.textWidth(line, 11, Font::Ui);
+		g.text(line, { tx, py, tw, 15 }, 11, Font::Ui, sh ? col::soft : col::dim);
+		hot({ tx, py, std::min(tw, lw), 15 }, Hit::SignalPath);
 	}
 	else
 	{
@@ -2037,82 +2185,82 @@ void App::drawPlayerBar()
 		g.text(L"Drop files on the window to start", { tx, cy + 2, tw, 16 }, 12, Font::Ui, col::muted);
 	}
 
-	// centre: controls, seek bar under them
-	float rowY = cy - 12;
-	float ctlW = 36 * 4 + 40 + 12 * 4;
-	float x = colC.cx() - ctlW / 2;
-	auto ctl = [&](Hit id, const char* icon, bool filled, bool active) {
-		Rect r{ x, rowY - 18, 36, 36 };
-		if (active) g.fill(r, hovered(id) ? 0x333333 : col::ctlHover, 18);
-		else if (hovered(id)) g.fill(r, col::ctlHover, 18);
-		uint32_t c = active ? col::white : hovered(id) ? col::text : col::soft;
-		g.icon(icon, { r.cx() - 8, r.cy() - 8, 16, 16 }, c, filled, 1.6f);
-		hot(r, id);
-		x += 36 + 12;
-	};
-	ctl(Hit::Shuffle, icons::shuffle, false, shuffle);
-	ctl(Hit::Prev, icons::prev, true, false);
-	{
-		Rect r{ x, rowY - 20, 40, 40 };
-		g.circle(r.cx(), r.cy(), 20, hovered(Hit::Play) ? col::white : col::text);
-		bool playing = st == State::Playing;
-		g.icon(playing ? icons::pause : icons::play, { r.cx() - 8, r.cy() - 8, 16, 16 }, 0x131313, true);
-		hot(r, Hit::Play);
-		x += 40 + 12;
-	}
-	ctl(Hit::Next, icons::next, true, false);
-	{
-		float rx = x;
-		ctl(Hit::Repeat, icons::repeat, false, repeat != 0);
-		if (repeat == 2) g.text(L"1", { rx + 23, rowY - 14, 8, 10 }, 9, Font::Mono, col::white);
-	}
 
-	float sy = cy + 22;
+	// ---- right cluster, laid out from the right edge inward
+	float x = card.right() - 16;
+	auto ctlAt = [&](float rx, Hit id, const char* icon, bool filled, bool active) {
+		Rect r{ rx, cy - 18, 36, 36 };
+		float h = anim(id, -1, hovered(id)), p = anim(id, -2, pressed(id));
+		float on = anim(id, -3, active);
+		if (on > 0.01f) g.fill(r, col::ctlHover, 18, on);
+		if (h > 0.01f) g.fill(r, on > 0.5f ? 0x333333 : col::ctlHover, 18, h * (on > 0.5f ? 0.6f : 1.0f));
+		uint32_t c = active ? col::white : hovered(id) ? col::text : col::soft;
+		float sz = 16 * (1 - 0.12f * p);
+		g.icon(icon, { r.cx() - sz / 2, r.cy() - sz / 2, sz, sz }, c, filled, 1.6f);
+		hot(r, id);
+		return r;
+	};
+	if (showRight)
+	{
+		volumeBar = { x - 80, cy - 2, 80, 4 };
+		g.fill(volumeBar, col::track, 2);
+		g.fill({ volumeBar.x, volumeBar.y, volumeBar.w * volume, 4 }, col::text, 2);
+		if (hovered(Hit::Volume) || (dragging && pressHit == Hit::Volume))
+			g.circle(volumeBar.x + volumeBar.w * volume, cy, 6, col::white);
+		hot({ volumeBar.x - 6, cy - 12, volumeBar.w + 12, 24 }, Hit::Volume);
+		x = volumeBar.x - 8;
+		g.icon(volume <= 0.001f ? icons::mute : icons::volume, { x - 18, cy - 9, 18, 18 }, col::soft, false, 1.6f);
+		x -= 18 + 8;
+
+		x -= 36;
+		ctlAt(x, Hit::QueueButton, icons::queue, false, queueOpen);
+		x -= 9;
+		g.line(x + 0.5f, cy - 12, x + 0.5f, cy + 12, col::line, 1);
+		x -= 8;
+	}
+	x -= 36;
+	{
+		Rect r = ctlAt(x, Hit::Repeat, icons::repeat, false, repeat != 0);
+		if (repeat == 2) g.text(L"1", { r.x + 23, r.y + 4, 8, 10 }, 9, Font::Mono, col::white);
+	}
+	x -= 2 + 36;
+	ctlAt(x, Hit::Shuffle, icons::shuffle, false, shuffle);
+	float rightStart = x - 24;
+
+	// ---- middle: previous, play, next, then time | seek bar | time
+	float mx = leftEnd + 24;
+	ctlAt(mx, Hit::Prev, icons::prev, true, false);
+	mx += 36 + 6;
+	{
+		Rect r{ mx, cy - 22, 44, 44 };
+		float h = anim(Hit::Play, -1, hovered(Hit::Play)), p = anim(Hit::Play, -2, pressed(Hit::Play));
+		float rad = 22 * (1 + 0.05f * h - 0.08f * p);
+		g.circle(r.cx(), r.cy(), rad, col::text);
+		if (h > 0.01f) g.circle(r.cx(), r.cy(), rad, col::white, true, 1, h);
+		float isz = 17 * (1 - 0.08f * p);
+		g.icon(st == State::Playing ? icons::pause : icons::play, { r.cx() - isz / 2, r.cy() - isz / 2, isz, isz }, 0x131313, true);
+		hot(r, Hit::Play);
+		mx += 44 + 6;
+	}
+	ctlAt(mx, Hit::Next, icons::next, true, false);
+	mx += 36 + 16;
+
 	double dur = hasTrack ? player.duration() : 0;
 	double pos = dragging && pressHit == Hit::Seek ? dragSeconds : hasTrack ? player.position() : 0;
-	g.text(fmtTime(pos), { colC.x, sy - 9, 40, 18 }, 11, Font::Mono, col::dim, Align::Right);
-	g.text(fmtTime(dur), { colC.right() - 40, sy - 9, 40, 18 }, 11, Font::Mono, col::dim);
-	seekBar = { colC.x + 50, sy - 2, colC.w - 100, 4 };
-	g.fill(seekBar, col::track, 2);
-	float f = clamp01(dur > 0 ? (float)(pos / dur) : 0);
-	if (f > 0) g.fill({ seekBar.x, seekBar.y, seekBar.w * f, 4 }, col::text, 2);
-	if (hasTrack && (hovered(Hit::Seek) || (dragging && pressHit == Hit::Seek)))
-		g.circle(seekBar.x + seekBar.w * f, sy, 6, col::white);
-	hot({ seekBar.x - 6, sy - 9, seekBar.w + 12, 18 }, Hit::Seek);
-
-	if (!showRight) return;
-
-	// right: queue button with what's next, volume
-	float rx = card.right() - 16;
-	volumeBar = { rx - 88, cy - 2, 88, 4 };
-	g.fill(volumeBar, col::track, 2);
-	g.fill({ volumeBar.x, volumeBar.y, volumeBar.w * volume, 4 }, col::text, 2);
-	if (hovered(Hit::Volume) || (dragging && pressHit == Hit::Volume))
-		g.circle(volumeBar.x + volumeBar.w * volume, cy, 6, col::white);
-	g.icon(volume <= 0.001f ? icons::mute : icons::volume, { volumeBar.x - 8 - 18, cy - 9, 18, 18 }, col::soft, false, 1.6f);
-	hot({ volumeBar.x - 6, cy - 12, volumeBar.w + 12, 24 }, Hit::Volume);
-
-	float qRight = volumeBar.x - 8 - 18 - 14;
-	std::wstring label;
-	if (W >= 1100)
+	std::wstring a1 = fmtTime(pos), a2 = fmtTime(dur);
+	float t1 = g.textWidth(a1, 11, Font::Mono), t2 = g.textWidth(a2, 11, Font::Mono);
+	float seekW = rightStart - mx - t1 - t2 - 24;
+	if (seekW > 60)
 	{
-		std::vector<int> up = upcoming();
-		label = current >= 0 && !up.empty() ? queue[up.front()].title : L"";
+		g.text(a1, { mx, cy - 9, t1 + 2, 18 }, 11, Font::Mono, col::dim);
+		seekBar = { mx + t1 + 12, cy - 2, seekW, 4 };
+		g.text(a2, { seekBar.right() + 12, cy - 9, t2 + 2, 18 }, 11, Font::Mono, col::dim);
+		g.fill(seekBar, col::track, 2);
+		float f = clamp01(dur > 0 ? (float)(pos / dur) : 0);
+		if (f > 0) g.fill({ seekBar.x, seekBar.y, seekBar.w * f, 4 }, col::text, 2);
+		if (hasTrack && (hovered(Hit::Seek) || (dragging && pressHit == Hit::Seek)))
+			g.circle(seekBar.x + seekBar.w * f, cy, 6, col::white);
+		hot({ seekBar.x - 6, cy - 12, seekBar.w + 12, 24 }, Hit::Seek);
 	}
-	float avail = qRight - (colC.right() + 24) - 18 - 30 - g.textWidth(L"Next: ", 12, Font::Ui);
-	float textW = label.empty() ? 0 : std::min(g.textWidth(label, 12, Font::Ui), std::min(180.0f, avail));
-	if (textW < 30) { textW = 0; label.clear(); }
-	float bw = label.empty() ? 36 : 12 + 18 + 8 + g.textWidth(L"Next: ", 12, Font::Ui) + textW + 12;
-	Rect qb{ qRight - bw, cy - 18, bw, 36 };
-	if (queueOpen) g.fill(qb, col::ctlHover, 18);
-	else if (hovered(Hit::QueueButton)) g.fill(qb, col::hover, 18);
-	float ix = label.empty() ? qb.cx() - 9 : qb.x + 12;
-	g.icon(icons::queue, { ix, cy - 9, 18, 18 }, queueOpen ? col::white : col::soft, false, 1.6f);
-	if (!label.empty())
-	{
-		float lx = ix + 18 + 8, nw = g.textWidth(L"Next: ", 12, Font::Ui);
-		g.text(L"Next: ", { lx, cy - 9, nw + 2, 18 }, 12, Font::Ui, col::dim);
-		g.text(label, { lx + nw, cy - 9, textW + 2, 18 }, 12, Font::Ui, col::text);
-	}
-	hot(qb, Hit::QueueButton);
+	else seekBar = {};
 }

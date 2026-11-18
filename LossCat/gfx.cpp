@@ -509,7 +509,7 @@ std::vector<unsigned char> Gfx::shrinkImage(const std::vector<unsigned char>& by
 	return result.empty() ? bytes : result;
 }
 
-void Gfx::image(ID2D1Bitmap* bmp, const Rect& r, float radius)
+void Gfx::image(ID2D1Bitmap* bmp, const Rect& r, float radius, bool squareRight)
 {
 	if (!bmp) return;
 	// Crop to a centred square-ish region with the same aspect as r ("object-fit: cover").
@@ -522,12 +522,16 @@ void Gfx::image(ID2D1Bitmap* bmp, const Rect& r, float radius)
 	ComPtr<ID2D1Layer> layer;
 	if (radius > 0)
 	{
-		factory->CreateRoundedRectangleGeometry(D2D1::RoundedRect(rectF(r), radius, radius), &clip);
+		// Left corners only: round a rect that runs past the right edge, then cut it at the edge.
+		Rect shape = squareRight ? Rect{ r.x, r.y, r.w + radius, r.h } : r;
+		if (squareRight) pushClip(r);
+		factory->CreateRoundedRectangleGeometry(D2D1::RoundedRect(rectF(shape), radius, radius), &clip);
 		target->CreateLayer(&layer);
 		target->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), clip.Get()), layer.Get());
 	}
 	target->DrawBitmap(bmp, rectF(r), 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, src);
 	if (radius > 0) target->PopLayer();
+	if (radius > 0 && squareRight) popClip();
 }
 
 void Gfx::pushClip(const Rect& r)

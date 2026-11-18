@@ -22,7 +22,7 @@ enum class Hit
 	Cover, Shuffle, Prev, Play, Next, Repeat, Seek, Volume, QueueButton,
 	OpenFiles, SignalPath,
 	Panel,           // background that swallows clicks (not a drag area)
-	QueueRow,
+	QueueRow, QueueRemove, QueueClear, QueueUndo,
 	LibraryRow,
 	OpenLibraryFolder, ChangeLibraryFolder, AddMusicFolder, RemoveMusicFolder, OpenMusicFolder, ShowHidden,
 	LibTabAlbums, LibTabArtists, LibTabSongs,
@@ -58,6 +58,7 @@ struct Track
 	std::wstring title, artist, album;
 	std::vector<unsigned char> coverBytes;
 	bool coverLoaded = false;
+	bool queued = false;            // added with Play next / Add to queue
 };
 
 double nowMs();   // high-resolution clock for animations
@@ -130,6 +131,12 @@ private:
 	void drawTrackRows(const Rect& area, const std::vector<Track>& list, Hit rowHit);
 	void hot(const Rect& r, Hit id, int index = -1);
 	bool hovered(Hit id, int index = -1) const { return hoverHit == id && (index < 0 || hoverIndex == index); }
+	bool pressed(Hit id, int index = -1) const { return pressHit == id && hovered(id, index); }
+	// Eases 0..1 toward `on` over ~120 ms, per control; keeps frames coming while it moves.
+	float anim(Hit id, int index, bool on);
+	struct AnimState { float value = 0; double t = 0; };
+	std::map<long long, AnimState> anims;
+	mutable bool animMoving = false;
 	Hit hitAt(float x, float y, int* index = nullptr) const;
 
 	// actions
@@ -138,6 +145,26 @@ private:
 	void rebuildOrder();
 	void ensureOrder();
 	std::vector<int> upcoming() const;
+	void enqueue(const std::vector<std::wstring>& paths, bool playNext);   // after the current song, or at the end
+
+	// ---- editing the queue: drag to reorder, remove with undo
+	void moveQueued(int qi, int slot);              // slot: position among the songs up next (0 = next)
+	void removeQueued(std::vector<int> qis, const std::wstring& what);
+	void undoQueue();
+	int queueSlotAt(float y) const;
+	struct QRow { int qi; int up; int list; Rect r; };   // up: position in upcoming(); list 1 = panel, 2 = Up next tab
+	std::vector<QRow> qRows;                        // rows drawn this frame
+	int qDragItem = -1, qDragList = 0, qDropSlot = -1;
+	bool qDragging = false;
+	float qPressY = 0;
+	float queueScroll = 0, queueMaxScroll = 0;
+	Rect queueList;
+	struct QueueSnap { std::vector<Track> queue; std::vector<int> order; int current = -1; std::wstring path; };
+	QueueSnap undoSnap;
+	bool hasUndo = false;
+	std::wstring toastText;
+	void drawToast();
+	void drawDragGhost();
 	void playFromLibrary(int i);
 	void playList(const std::vector<int>& libIndices, int start);
 	std::vector<std::wstring> pickFiles();
@@ -197,8 +224,8 @@ private:
 	Rect pageArea;
 	std::wstring notice;
 
-	enum class Act { Play, AddToLibrary, Remove, SetCover, Favourite, Unfavourite, PlaylistMenu, AddTo, NewWith, RemoveFromPlaylist, PlayPlaylist, RenamePlaylist, DeletePlaylist };
-	enum class Look { Item, Heading, Action };   // Action: icon, bold, line under it
+	enum class Act { Play, AddToLibrary, Remove, SetCover, Favourite, Unfavourite, PlaylistMenu, AddTo, NewWith, RemoveFromPlaylist, PlayPlaylist, RenamePlaylist, DeletePlaylist, PlayNext, AddToQueue, PlayNow, MoveNext, MoveEnd, RemoveQueued, ClearUpNext };
+	enum class Look { Item, Heading, Action, Separator };   // Action: icon, bold, line under it
 	struct MenuEntry { std::wstring label; Act act; bool danger; int arg = -1; Look look = Look::Item; };
 	bool menuOpen = false;
 	// Name shown beside a hovered playlist when the sidebar is collapsed.
