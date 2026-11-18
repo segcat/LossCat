@@ -89,6 +89,7 @@
       <WarningLevel>TurnOffAllWarnings</WarningLevel>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
+    <ClCompile Include="equalizer.cpp" />
     <ClCompile Include="library.cpp" />
     <ClCompile Include="miniaudio_impl.cpp" />
     <ClCompile Include="playlists.cpp" />
@@ -96,6 +97,8 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="asio_output.h" />
+    <ClInclude Include="biquad.h" />
+    <ClInclude Include="equalizer.h" />
     <ClInclude Include="library.h" />
     <ClInclude Include="names.h" />
     <ClInclude Include="player.h" />

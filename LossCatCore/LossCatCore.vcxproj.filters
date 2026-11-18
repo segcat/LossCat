@@ -42,6 +42,9 @@
     <ClCompile Include="playlists.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="equalizer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="player.h">
@@ -60,6 +63,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="names.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="equalizer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="biquad.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
