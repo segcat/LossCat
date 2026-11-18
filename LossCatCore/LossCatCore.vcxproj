@@ -70,11 +70,14 @@
   <ItemGroup>
     <ClCompile Include="library.cpp" />
     <ClCompile Include="miniaudio_impl.cpp" />
+    <ClCompile Include="playlists.cpp" />
     <ClCompile Include="trackinfo.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="library.h" />
+    <ClInclude Include="names.h" />
     <ClInclude Include="player.h" />
+    <ClInclude Include="playlists.h" />
     <ClInclude Include="trackinfo.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

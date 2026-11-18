@@ -1,21 +1,6 @@
 #include "library.h"
 #include <cstring>
-
-static std::string cleanName(std::string s, const char* fallback)
-{
-    for (char& c : s)
-    {
-        if (std::strchr("<>:\"/\\|?*", c) || (unsigned char)c < 32)
-        {
-            c = '_';
-        }
-    }
-    while (!s.empty() && (s.back() == ' ' || s.back() == '.'))
-    {
-        s.pop_back();         
-    }
-    return s.empty() ? fallback : s;
-}
+#include "names.h"
 int Library::addTrack(const std::filesystem::path& p)
 {
     std::u8string u8 = p.u8string();
