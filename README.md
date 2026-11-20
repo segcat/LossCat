@@ -9,12 +9,15 @@ LossCat is an early-stage project. The basics are in place, but there are still 
 - Plays FLAC, WAV, AIFF and MP3.
 - Imports music into its own folder, organised by artist and album, or scans your existing music folders in place without copying them.
 - Lets you browse albums, artists, songs and playlists, with album and artist pages.
+- Searches your library for songs, albums and artists from the search bar.
 - Keeps playlists and Favourites in `.m3u8` files, plus a **Lossless 24-bit** smart playlist that fills itself from your library.
 - Shows cover art, lyrics and audio details from file tags, with the album's other songs on Now playing.
 - Lets you set album covers and lyrics, and saves them into the song files' tags.
 - Plays bit-perfect through WASAPI exclusive mode or ASIO, and shows whether the output is bit-perfect, resampled or converted.
 - Remembers your volume, queue, position and recently played songs between sessions.
-- Includes a queue, shuffle, repeat and media-key controls.
+- Includes an editable queue with drag-to-reorder, removal, clear and undo, plus **Play next** and **Add to queue** actions.
+- Includes shuffle, repeat and media-key controls.
+- Offers a 10-band equalizer with preamp, on/off and reset controls in Settings (Shared mode, stereo only).
 - Supports Unicode file paths.
 
 ## Using it
@@ -42,6 +45,18 @@ You can also change the LossCat folder. Your imported songs and playlists are mo
 
 Scans run in the background. LossCat keeps a tag cache, so after the first scan only new or changed files are read again. Press **F5** to rescan.
 
+### Search and queue
+
+Use the search bar, **Ctrl+F** or **/** to find songs, albums and artists in your library. Song searches match titles, artists and albums.
+
+Right-click a song to **Play next** or **Add to queue**. In the queue panel you can drag songs to reorder them, remove songs, clear the queue and undo queue edits.
+
+### Equalizer
+
+In **Settings → Equalizer**, turn on the EQ and adjust the ten bands from **31 Hz to 16 kHz**, plus the preamp. Each control ranges from **−12 to +12 dB**. Drag a slider or use the mouse wheel over it; **Reset** returns all gains and the preamp to zero. Your EQ settings are saved between sessions.
+
+The EQ currently processes **stereo playback in Shared mode only**; it does not affect Exclusive or ASIO output. Turning it off, or leaving every control at zero, bypasses processing. Boosting bands can cause clipping; lower the preamp to leave headroom.
+
 ### Covers and lyrics are saved into your files
 
 **Set album cover** (on an album page, or by right-clicking an album or song) takes a JPEG or PNG image, resizes it to fit within 1200 pixels, converts it to JPEG and embeds it into the tags of every song on the album, replacing any existing cover art.
@@ -57,6 +72,7 @@ Both change the audio files themselves, though only their tags; the audio data i
 | Space | Play / pause |
 | Left / Right | Seek back / forward 5 seconds |
 | Ctrl+O | Open files |
+| Ctrl+F or / | Focus search |
 | Ctrl+L | Toggle favourite |
 | Ctrl+B | Toggle sidebar |
 | Ctrl+, | Settings |
@@ -83,7 +99,7 @@ vcpkg restores TagLib from the manifest. The first build may take longer while d
 
 - Audio-device changes may require restarting the app.
 - OGG, Opus and M4A files show up in the library but can't be played yet.
-- There's no search yet.
+- The equalizer only works with stereo playback in Shared mode, not Exclusive or ASIO.
 - Keyboard navigation and screen-reader support are incomplete.
 
 ## Code
