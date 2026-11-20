@@ -2206,7 +2206,7 @@ void App::drawSettings(const Rect& a)
 		g.icon(icons::cat, logo, col::text, true);
 		g.icon(icons::catTail, logo, col::text, false, 1.8f);
 		g.text(L"LossCat", { x + 36, y + 11, 300, 20 }, 14, Font::UiMedium, col::text);
-		g.text(L"Version 0.2.2, \u00A9 2026 SegCat", { x + 36, y + 31, 400, 18 }, 12, Font::Ui, col::dim);
+		g.text(L"Version 0.2.3, \u00A9 2026 SegCat", { x + 36, y + 31, 400, 18 }, 12, Font::Ui, col::dim);
 		link(L"GPLv3 License", L"license:201|LossCat", x + w, y + 20);
 		y += 60;
 	}
