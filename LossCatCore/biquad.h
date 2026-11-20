@@ -1,6 +1,6 @@
 #pragma once
 #include <cmath>
-
+#include <algorithm>
 struct Biquad {
 	double b0 = 1, b1 = 0, b2 = 0;
 	double a1 = 0, a2 = 0;
@@ -24,7 +24,7 @@ struct Biquad {
 		a1 = (-2.0 * cosw0) / a0;
 		a2 = (1.0 - alpha / a) / a0;
 	}
-	float process(float input)
+	float process(float input)	
 	{
 		double output = b0 * input + z1;
 		z1 = b1 * input + z2 - a1 * output;
