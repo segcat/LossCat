@@ -6,15 +6,18 @@
 #include <mutex>
 #include <filesystem>
 #include <vector>
+#include "equalizer.h"
 #ifdef _WIN32
 #include "asio_output.h"
 #endif
+//A comment means I probably didn't use the best approach but whatever I could come up with so keep it in mind
 
 enum class State { NoTrack, Playing, Paused, Finished };
 
 class Player
 {
 private:
+	
 	State state = State::NoTrack;
 	std::atomic<bool> done{ false };
 	std::string filePath;
@@ -53,7 +56,8 @@ private:
 	std::string chosenName;
 	ma_device_id chosenId;
 	bool haveChosenId = false;
-
+	//
+	Equalizer eq;
 	bool ensureContext()
 	{
 		if (!contextReady)
@@ -225,14 +229,19 @@ private:
 			return;
 		}
 		ma_decoder_read_pcm_frames(&player->decoder, pOutput, frameCount, &framesRead);
+		if (pDevice->playback.format == ma_format_f32)
+		{
+			player->eq.process((float*)pOutput, (int)framesRead, (int)pDevice->playback.channels);
+		}
 		player->framesPlayed += framesRead;
-		if (framesRead < frameCount)
+		if (framesRead < frameCount)	
 		{
 			player->done = true;
 			return;
 		}
 	}
 public:
+	Equalizer& equalizer() { return eq; }
 	Player(const Player&) = delete;
 	Player& operator=(const Player&) = delete;
 	Player() {
@@ -563,7 +572,7 @@ public:
 		{
 			totalFrames = 0;
 		}
-
+		eq.prepare((double)decoder.outputSampleRate);
 		done = false;
 		framesPlayed = 0;
 		filePath = path;
