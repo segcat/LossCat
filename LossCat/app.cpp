@@ -679,6 +679,19 @@ void App::click(Hit id, int index)
 		if (!query.empty() && page != Page::Search) { searchFrom = page; page = Page::Search; }
 		break;
 	case Hit::EqToggle: eqOn = !eqOn; applyEq(); break;
+	case Hit::EqPresetMenu:
+	{
+		menu.clear();
+		menuPaths.clear();
+		int nowP = eqPresetNow();
+		for (int p = 0; p < eqPresetCount; ++p)
+			menu.push_back({ eqPresets[p].name, Act::PickEqPreset, false, p, Look::Item, nowP == p });
+		menuX = eqPresetButton.right();
+		menuY = eqPresetButton.bottom() + 4;
+		menuOpen = true;
+		menuLeft = true;
+		break;
+	}
 	case Hit::EqReset:
 		eqPreamp = 0;
 		for (float& g : eqGains) g = 0;
@@ -794,6 +807,17 @@ void App::click(Hit id, int index)
 			{
 				if (menuPlaylist >= 0 && menuPosition >= 0) pls.removeAt(menuPlaylist, menuPosition);
 				++plVersion;
+				break;
+			}
+			if (act == Act::PickEqPreset)
+			{
+				if (arg >= 0 && arg < eqPresetCount)
+				{
+					eqPreamp = eqPresets[arg].preamp;
+					for (int b = 0; b < 10; ++b) eqGains[b] = eqPresets[arg].gains[b];
+					eqOn = arg != 0;   // picking a sound means you want to hear it; Flat is the same as off
+					applyEq();
+				}
 				break;
 			}
 			if (act == Act::PickSort)
@@ -1527,6 +1551,32 @@ void App::runSearch()
 }
 
 // ---------------------------------------------------------------- equalizer
+
+// Gains for 31 62 125 250 500 1k 2k 4k 8k 16k. Each preamp leaves room for the biggest boost,
+// so a preset can't clip on its own.
+const App::EqPreset App::eqPresets[] = {
+	{ L"Flat",          0, {  0,  0,  0,  0,  0,  0,  0,  0,  0,  0 } },
+	{ L"Bass boost",   -6, {  6,  5,  4,  2,  0,  0,  0,  0,  0,  0 } },
+	{ L"Bass cut",      0, { -6, -5, -3, -1,  0,  0,  0,  0,  0,  0 } },
+	{ L"Treble boost", -6, {  0,  0,  0,  0,  0,  0,  1,  3,  5,  6 } },
+	{ L"Treble cut",    0, {  0,  0,  0,  0,  0,  0, -1, -3, -5, -6 } },
+	{ L"Vocals",       -3, { -2, -2, -1,  0,  2,  3,  3,  2,  0, -1 } },
+	{ L"Loudness",     -5, {  5,  4,  2,  0, -1, -1,  0,  2,  4,  5 } },
+	{ L"Warm",         -3, {  3,  3,  2,  1,  0,  0, -1, -2, -3, -3 } },
+	{ L"Bright",       -3, { -1, -1,  0,  0,  0,  1,  2,  3,  3,  2 } },
+};
+const int App::eqPresetCount = (int)(sizeof(eqPresets) / sizeof(eqPresets[0]));
+
+int App::eqPresetNow() const
+{
+	for (int p = 0; p < eqPresetCount; ++p)
+	{
+		bool same = eqPresets[p].preamp == eqPreamp;
+		for (int b = 0; b < 10 && same; ++b) same = eqPresets[p].gains[b] == eqGains[b];
+		if (same) return p;
+	}
+	return -1;
+}
 
 void App::applyEq()
 {

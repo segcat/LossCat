@@ -1542,6 +1542,12 @@ void App::drawNowPlaying(const Rect& a)
 			px += 14;
 			label(L"Bit-perfect", col::white);
 		}
+		else if (player.equalizerActive())
+		{
+			g.circle(px + 4, cyy, 3, col::dim, false, 1);
+			px += 14;
+			label(L"EQ active, not bit-perfect", col::dim);
+		}
 		else if ((player.exclusiveActive() || player.asioActive()) && same)
 		{
 			g.circle(px + 4, cyy, 3, col::dim, false, 1);
@@ -1982,6 +1988,7 @@ void App::drawSettings(const Rect& a)
 		bool filled = false;
 		if (player.deviceSampleRate() == 0) status = L"Opens when a song plays";
 		else if (player.bitPerfect(current >= 0 ? queue[current].info.bitsPerSample : 0)) { status = L"Bit-perfect"; statusCol = col::white; filled = true; }
+		else if (player.equalizerActive()) status = L"EQ active, not bit-perfect";
 		else if (current >= 0 && queue[current].info.sampleRate && queue[current].info.sampleRate != (int)player.deviceSampleRate())
 			status = L"Resampled from " + fmtRate(queue[current].info.sampleRate) + L" kHz";
 		else if ((player.exclusiveActive() || player.asioActive()) && volume < 0.9999f) status = L"Not bit-perfect: volume below 100%";
@@ -2030,10 +2037,9 @@ void App::drawSettings(const Rect& a)
 		// On/off and Reset on the first row, the eleven sliders under it.
 		g.line(x, y + 0.5f, x + w, y + 0.5f, col::line, 1);
 		g.text(L"Equalizer", { x, y + 11, w * 0.55f, 20 }, 14, Font::Ui, col::text);
-		std::wstring sub = audioMode != 0 ? L"Only works in Shared mode for now"
-			: eqOn ? L"Changes the sound, so playback isn't bit-perfect while it's on"
+		std::wstring sub = eqOn ? L"Stereo EQ in all modes; active EQ isn't bit-perfect"
 			: L"Off: music plays untouched";
-		g.text(sub, { x, y + 31, w * 0.6f, 18 }, 12, Font::Ui, col::dim);
+		g.text(sub, { x, y + 31, w * 0.45f, 18 }, 12, Font::Ui, col::dim);
 
 		Rect sw{ x + w - 44, y + 19, 44, 24 };
 		float on = anim(Hit::EqToggle, -1, eqOn);
@@ -2044,15 +2050,32 @@ void App::drawSettings(const Rect& a)
 
 		bool anySet = eqPreamp != 0;
 		for (float gv : eqGains) if (gv != 0) anySet = true;
+		float leftOf = sw.x - 12;
 		if (anySet)
 		{
 			float rw = g.textWidth(L"Reset", 13, Font::Ui) + 24;
 			Rect rb{ sw.x - 12 - rw, y + 15, rw, 32 };
+			leftOf = rb.x - 8;
 			bool rh = hovered(Hit::EqReset);
 			if (rh) g.fill(rb, col::ctlHover, 6);
 			g.stroke(rb, rh ? 0x4A4A4A : col::chip, 6);
 			g.text(L"Reset", rb, 13, Font::Ui, rh ? col::white : col::soft, Align::Center);
 			hot(rb, Hit::EqReset);
+		}
+		{
+			// preset picker: shows the preset the sliders match, or Custom
+			int p = eqPresetNow();
+			std::wstring label = p >= 0 ? eqPresets[p].name : L"Custom";
+			float pw = std::max(g.textWidth(label, 13, Font::Ui) + 50, 140.0f);
+			Rect pb{ leftOf - pw, y + 13, pw, 34 };
+			float h = anim(Hit::EqPresetMenu, -1, hovered(Hit::EqPresetMenu));
+			g.fill(pb, 0x202020, 6);
+			if (h > 0.01f) g.fill(pb, col::ctlHover, 6, h);
+			g.stroke(pb, h > 0.5f ? 0x4A4A4A : col::chip, 6);
+			g.text(label, { pb.x + 14, pb.y, pb.w - 44, pb.h }, 13, Font::Ui, col::text);
+			g.icon("M6 9l6 6 6-6", { pb.right() - 28, pb.cy() - 8, 16, 16 }, col::soft, false, 1.8f);
+			hot(pb, Hit::EqPresetMenu);
+			eqPresetButton = pb;
 		}
 		y += 60;
 

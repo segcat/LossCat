@@ -25,7 +25,7 @@ enum class Hit
 	QueueRow, QueueRemove, QueueClear, QueueUndo,
 	SortHeader, SortMenu,
 	SearchField, SearchClear, SearchArtist, SearchAlbum, SearchRow,
-	EqToggle, EqReset, EqSlider,
+	EqToggle, EqReset, EqSlider, EqPresetMenu,
 	LibraryRow,
 	OpenLibraryFolder, ChangeLibraryFolder, AddMusicFolder, RemoveMusicFolder, OpenMusicFolder, ShowHidden,
 	LibTabAlbums, LibTabArtists, LibTabSongs,
@@ -170,6 +170,11 @@ private:
 	Rect eqTracks[11];                     // slider tracks: 0 = preamp, 1..10 = bands
 	void applyEq();                        // push all of the above to player.equalizer()
 	void setEqValue(int slider, float dB); // snapped to 0.5 dB steps, sticky at 0
+	struct EqPreset { const wchar_t* name; float preamp; float gains[10]; };
+	static const EqPreset eqPresets[];
+	static const int eqPresetCount;
+	int eqPresetNow() const;               // the preset the sliders match, or -1 for custom
+	Rect eqPresetButton;
 	void hot(const Rect& r, Hit id, int index = -1);
 	bool hovered(Hit id, int index = -1) const { return hoverHit == id && (index < 0 || hoverIndex == index); }
 	bool pressed(Hit id, int index = -1) const { return pressHit == id && hovered(id, index); }
@@ -265,7 +270,7 @@ private:
 	Rect pageArea;
 	std::wstring notice;
 
-	enum class Act { Play, AddToLibrary, Remove, SetCover, Favourite, Unfavourite, PlaylistMenu, AddTo, NewWith, RemoveFromPlaylist, PlayPlaylist, RenamePlaylist, DeletePlaylist, PickDevice, PickMode, PlayNext, AddToQueue, PlayNow, MoveNext, MoveEnd, RemoveQueued, ClearUpNext, PickSort };
+	enum class Act { Play, AddToLibrary, Remove, SetCover, Favourite, Unfavourite, PlaylistMenu, AddTo, NewWith, RemoveFromPlaylist, PlayPlaylist, RenamePlaylist, DeletePlaylist, PickDevice, PickMode, PlayNext, AddToQueue, PlayNow, MoveNext, MoveEnd, RemoveQueued, ClearUpNext, PickSort, PickEqPreset };
 	enum class Look { Item, Heading, Action, Separator };   // Action: icon, bold, line under it
 	struct MenuEntry { std::wstring label; Act act; bool danger; int arg = -1; Look look = Look::Item; bool checked = false; };
 	bool menuOpen = false;

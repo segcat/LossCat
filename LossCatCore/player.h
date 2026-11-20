@@ -58,6 +58,30 @@ private:
 	bool haveChosenId = false;
 	//
 	Equalizer eq;
+	void processEq(void* samples, ma_format format, ma_uint64 frames, ma_uint32 ch)
+	{
+		if (!eq.isActive() || ch != 2 || frames == 0) return;
+		if (format == ma_format_f32)
+		{
+			eq.process((float*)samples, (int)frames, (int)ch);
+			return;
+		}
+		ma_uint32 bytes = ma_get_bytes_per_sample(format);
+		if (bytes == 0) return;
+		// Small chunks keep this off the heap on the audio thread.
+		float temp[1024];
+		for (ma_uint64 f = 0; f < frames;)
+		{
+			int count = (int)std::min<ma_uint64>(frames - f, 512);
+			void* out = (unsigned char*)samples + f * ch * bytes;
+			ma_pcm_convert(temp, ma_format_f32, out, format, count * ch, ma_dither_mode_none);
+			eq.process(temp, count, (int)ch);
+			for (int i = 0; i < count * (int)ch; ++i)
+				temp[i] = std::clamp(temp[i], -1.0f, 1.0f);
+			ma_pcm_convert(out, format, temp, ma_format_f32, count * ch, ma_dither_mode_none);
+			f += count;
+		}
+	}
 	bool ensureContext()
 	{
 		if (!contextReady)
@@ -191,6 +215,7 @@ private:
 		}
 		ma_uint64 framesRead = 0;
 		ma_decoder_read_pcm_frames(&player->decoder, out, (ma_uint64)frames, &framesRead);
+		player->processEq(out, ma_format_s32, framesRead, (ma_uint32)ch);
 		player->framesPlayed += framesRead;
 		float v = player->masterVolume;
 		if (v < 0.9999f)
@@ -229,10 +254,7 @@ private:
 			return;
 		}
 		ma_decoder_read_pcm_frames(&player->decoder, pOutput, frameCount, &framesRead);
-		if (pDevice->playback.format == ma_format_f32)
-		{
-			player->eq.process((float*)pOutput, (int)framesRead, (int)pDevice->playback.channels);
-		}
+		player->processEq(pOutput, pDevice->playback.format, framesRead, pDevice->playback.channels);
 		player->framesPlayed += framesRead;
 		if (framesRead < frameCount)	
 		{
@@ -242,6 +264,7 @@ private:
 	}
 public:
 	Equalizer& equalizer() { return eq; }
+	bool equalizerActive() const { return channels == 2 && eq.isActive(); }
 	Player(const Player&) = delete;
 	Player& operator=(const Player&) = delete;
 	Player() {
@@ -397,6 +420,7 @@ public:
 	// its tags (decoders often hand 24-bit audio over in 32-bit samples); 0 if unknown.
 	bool bitPerfect(int fileBits = 0) const
 	{
+		if (equalizerActive()) return false;
 		if (fileBits <= 0)
 		{
 			fileBits = sourceBits;

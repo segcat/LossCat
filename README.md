@@ -17,7 +17,7 @@ LossCat is an early-stage project. The basics are in place, but there are still 
 - Remembers your volume, queue, position and recently played songs between sessions.
 - Includes an editable queue with drag-to-reorder, removal, clear and undo, plus **Play next** and **Add to queue** actions.
 - Includes shuffle, repeat and media-key controls.
-- Offers a 10-band equalizer with preamp, on/off and reset controls in Settings (Shared mode, stereo only).
+- Offers a 10-band equalizer with preamp, on/off and reset controls in Settings (Shared, Exclusive and ASIO; stereo only).
 - Supports Unicode file paths.
 
 ## Using it
@@ -55,7 +55,7 @@ Right-click a song to **Play next** or **Add to queue**. In the queue panel you 
 
 In **Settings → Equalizer**, turn on the EQ and adjust the ten bands from **31 Hz to 16 kHz**, plus the preamp. Each control ranges from **−12 to +12 dB**. Drag a slider or use the mouse wheel over it; **Reset** returns all gains and the preamp to zero. Your EQ settings are saved between sessions.
 
-The EQ currently processes **stereo playback in Shared mode only**; it does not affect Exclusive or ASIO output. Turning it off, or leaving every control at zero, bypasses processing. Boosting bands can cause clipping; lower the preamp to leave headroom.
+The EQ processes **stereo playback in Shared, Exclusive and ASIO modes**. Active EQ changes the samples, so Exclusive and ASIO playback is no longer bit-perfect; the status reflects this. Turning it off, or leaving every control at zero, bypasses processing without converting the samples. Boosting bands can cause clipping; lower the preamp to leave headroom.
 
 ### Covers and lyrics are saved into your files
 
@@ -99,7 +99,7 @@ vcpkg restores TagLib from the manifest. The first build may take longer while d
 
 - Audio-device changes may require restarting the app.
 - OGG, Opus and M4A files show up in the library but can't be played yet.
-- The equalizer only works with stereo playback in Shared mode, not Exclusive or ASIO.
+- The equalizer only works with stereo playback.
 - Keyboard navigation and screen-reader support are incomplete.
 
 ## Code
