@@ -2025,6 +2025,76 @@ void App::drawSettings(const Rect& a)
 		y += 30;
 	}
 
+	section(L"Equalizer");
+	{
+		// On/off and Reset on the first row, the eleven sliders under it.
+		g.line(x, y + 0.5f, x + w, y + 0.5f, col::line, 1);
+		g.text(L"Equalizer", { x, y + 11, w * 0.55f, 20 }, 14, Font::Ui, col::text);
+		std::wstring sub = audioMode != 0 ? L"Only works in Shared mode for now"
+			: eqOn ? L"Changes the sound, so playback isn't bit-perfect while it's on"
+			: L"Off: music plays untouched";
+		g.text(sub, { x, y + 31, w * 0.6f, 18 }, 12, Font::Ui, col::dim);
+
+		Rect sw{ x + w - 44, y + 19, 44, 24 };
+		float on = anim(Hit::EqToggle, -1, eqOn);
+		g.fill(sw, eqOn ? col::text : 0x333333, 12);
+		if (hovered(Hit::EqToggle)) g.stroke(sw, 0x5A5A5A, 12);
+		g.circle(sw.x + 12 + on * 20, sw.cy(), 8, eqOn ? 0x131313 : col::soft);
+		hot(sw, Hit::EqToggle);
+
+		bool anySet = eqPreamp != 0;
+		for (float gv : eqGains) if (gv != 0) anySet = true;
+		if (anySet)
+		{
+			float rw = g.textWidth(L"Reset", 13, Font::Ui) + 24;
+			Rect rb{ sw.x - 12 - rw, y + 15, rw, 32 };
+			bool rh = hovered(Hit::EqReset);
+			if (rh) g.fill(rb, col::ctlHover, 6);
+			g.stroke(rb, rh ? 0x4A4A4A : col::chip, 6);
+			g.text(L"Reset", rb, 13, Font::Ui, rh ? col::white : col::soft, Align::Center);
+			hot(rb, Hit::EqReset);
+		}
+		y += 60;
+
+		// sliders: Pre | 31 62 125 ... 16k, +12 at the top, -12 at the bottom
+		float areaH = 210;
+		float colW = std::min(56.0f, (w - 50) / 11.5f);
+		float x0 = x + 34;
+		float top = y + 30, bottom = y + areaH - 34;
+		uint32_t lineCol = 0x262626;
+		for (float db : { 12.0f, 0.0f, -12.0f })
+		{
+			float ly = top + (12 - db) / 24 * (bottom - top);
+			g.text(db > 0 ? L"+12" : db < 0 ? L"−12" : L"0", { x, ly - 8, 28, 16 }, 11, Font::Mono, col::muted, Align::Right);
+			g.line(x0, ly, x0 + colW * 11.5f, ly, db == 0 ? 0x333333 : lineCol, 1);
+		}
+		const wchar_t* labels[11] = { L"Pre", L"31", L"62", L"125", L"250", L"500", L"1k", L"2k", L"4k", L"8k", L"16k" };
+		for (int i = 0; i < 11; ++i)
+		{
+			float cx = x0 + colW * (i + 0.5f) + (i > 0 ? colW * 0.5f : 0);   // a gap after the preamp
+			float v = i == 0 ? eqPreamp : eqGains[i - 1];
+			bool hv = hovered(Hit::EqSlider, i) || (dragging && pressHit == Hit::EqSlider && pressIndex == i);
+			Rect track{ cx - 2, top, 4, bottom - top };
+			eqTracks[i] = track;
+			g.fill(track, 0x2A2A2A, 2);
+			float zy = top + (bottom - top) / 2;
+			float vy = top + (12 - v) / 24 * (bottom - top);
+			uint32_t fillCol = eqOn ? col::text : col::dim;
+			if (v != 0) g.fill({ cx - 2, std::min(zy, vy), 4, std::fabs(vy - zy) }, fillCol, 2);
+			g.circle(cx, vy, hv ? 8.0f : 7.0f, eqOn ? col::white : col::soft);
+			wchar_t num[16];
+			if (v == 0) wcscpy_s(num, L"0");
+			else swprintf(num, 16, v == std::floor(v) ? L"%+.0f" : L"%+.1f", v);
+			g.text(num, { cx - colW / 2, y + 4, colW, 18 }, 11, Font::Mono, hv ? col::text : col::dim, Align::Center);
+			g.text(labels[i], { cx - colW / 2, bottom + 12, colW, 18 }, 12, Font::Ui, hv ? col::text : col::dim, Align::Center);
+			hot({ cx - colW / 2, top - 12, colW, bottom - top + 24 }, Hit::EqSlider, i);
+		}
+		g.line(x0 + colW * 1.25f, top - 6, x0 + colW * 1.25f, bottom + 6, lineCol, 1);
+		y += areaH;
+		g.line(x, y - 0.5f, x + w, y - 0.5f, col::line, 1);
+		y += 30;
+	}
+
 	section(L"Library");
 	{
 		// small outlined buttons, right-aligned, drawn right to left

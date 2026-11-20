@@ -129,6 +129,7 @@ bool App::create(HINSTANCE inst, int show)
 	audioOk = player.init(0, 0);   // device's native channels and rate
 	if (audioOk) player.setVolume(volume);
 	else error = L"No audio output device";
+	applyEq();
 
 	for (float* v : { &pageScroll, &listScroll, &sideScroll, &lyricScroll, &nowAlbumScroll, &queueScroll })
 		smooths.push_back({ v, *v, *v });
@@ -317,6 +318,11 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 				float f = (y - lyricArea.y - lyricThumbH / 2) / (lyricArea.h - lyricThumbH);
 				lyricScroll = (f < 0 ? 0 : f > 1 ? 1 : f) * lyricMaxScroll;
 			}
+			else if (pressHit == Hit::EqSlider && pressIndex >= 0 && pressIndex < 11 && eqTracks[pressIndex].h > 0)
+			{
+				const Rect& t = eqTracks[pressIndex];
+				setEqValue(pressIndex, 12.0f - (y - t.y) / t.h * 24.0f);
+			}
 			else if (pressHit == Hit::Volume && volumeBar.w > 0)
 			{
 				float f = (x - volumeBar.x) / volumeBar.w;
@@ -365,6 +371,14 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 			SetCapture(hwnd);
 		}
 		else if (pressHit != Hit::LyricCopy && pressHit != Hit::LyricScroll) lyricSelA = lyricSelB = -1;
+		if (pressHit == Hit::EqSlider && pressIndex >= 0 && pressIndex < 11 && eqTracks[pressIndex].h > 0)
+		{
+			// grab anywhere on the column: the value jumps to the pointer, then follows it
+			const Rect& t = eqTracks[pressIndex];
+			setEqValue(pressIndex, 12.0f - (y - t.y) / t.h * 24.0f);
+			dragging = true;
+			SetCapture(hwnd);
+		}
 		if (pressHit == Hit::Seek || pressHit == Hit::Volume || pressHit == Hit::LyricScroll)
 		{
 			if (pressHit == Hit::Seek && current < 0) { pressHit = Hit::None; return 0; }
@@ -424,6 +438,12 @@ LRESULT App::handle(UINT msg, WPARAM wp, LPARAM lp)
 		return 0;
 	}
 	case WM_MOUSEWHEEL:
+		if (hoverHit == Hit::EqSlider && hoverIndex >= 0 && hoverIndex < 11)
+		{
+			float cur = hoverIndex == 0 ? eqPreamp : eqGains[hoverIndex - 1];
+			setEqValue(hoverIndex, cur + (GET_WHEEL_DELTA_WPARAM(wp) > 0 ? 0.5f : -0.5f));
+			return 0;
+		}
 		if (hoverHit != Hit::Volume)
 		{
 			POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
@@ -657,6 +677,12 @@ void App::click(Hit id, int index)
 	case Hit::SearchField:
 		searchFocused = true;
 		if (!query.empty() && page != Page::Search) { searchFrom = page; page = Page::Search; }
+		break;
+	case Hit::EqToggle: eqOn = !eqOn; applyEq(); break;
+	case Hit::EqReset:
+		eqPreamp = 0;
+		for (float& g : eqGains) g = 0;
+		applyEq();
 		break;
 	case Hit::SearchClear: setQuery(L""); searchFocused = true; break;
 	case Hit::SearchArtist: if (index >= 0 && index < (int)searchArtists.size()) openArtist(searchArtists[index]); break;
@@ -1498,6 +1524,28 @@ void App::runSearch()
 	};
 	rank(artists, searchArtists, false);
 	rank(albums, searchAlbums, true);
+}
+
+// ---------------------------------------------------------------- equalizer
+
+void App::applyEq()
+{
+	Equalizer& e = player.equalizer();
+	e.setEnabled(eqOn);
+	e.setPreamp(eqPreamp);
+	for (int b = 0; b < 10; ++b) e.setGain(b, eqGains[b]);
+	InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+void App::setEqValue(int slider, float dB)
+{
+	// half-dB steps, and a small dead zone so the middle really is 0 (and the EQ can switch itself off)
+	dB = std::round(dB * 2) / 2;
+	if (std::fabs(dB) < 0.75f) dB = 0;
+	dB = dB < -12 ? -12.0f : dB > 12 ? 12.0f : dB;
+	if (slider == 0) { if (eqPreamp == dB) return; eqPreamp = dB; player.equalizer().setPreamp(dB); }
+	else if (slider >= 1 && slider <= 10) { if (eqGains[slider - 1] == dB) return; eqGains[slider - 1] = dB; player.equalizer().setGain(slider - 1, dB); }
+	InvalidateRect(hwnd, nullptr, FALSE);
 }
 
 void App::playFromLibrary(int i)
@@ -2673,6 +2721,14 @@ void App::saveState()
 	s += "repeat=" + std::to_string(repeat) + "\n";
 	s += "sidebar=" + std::string(collapsed ? "collapsed" : "open") + "\n";
 	s += "queuePanel=" + std::string(queueOpen ? "open" : "closed") + "\n";
+	{
+		// eq=on|off,preamp,g31,...,g16k
+		char e[32];
+		std::string line = std::string("eq=") + (eqOn ? "on" : "off");
+		snprintf(e, sizeof e, ",%.1f", eqPreamp); line += e;
+		for (float g : eqGains) { snprintf(e, sizeof e, ",%.1f", g); line += e; }
+		s += line + "\n";
+	}
 	s += "songSort=" + std::to_string(songSort) + (songSortDesc ? ",desc" : ",asc") + "\n";
 	if (current >= 0)
 	{
@@ -2740,6 +2796,15 @@ void App::loadState()
 		else if (key == "repeat") { repeat = atoi(val.c_str()); if (repeat < 0 || repeat > 2) repeat = 0; }
 		else if (key == "sidebar") collapsed = val == "collapsed";
 		else if (key == "queuePanel") queueOpen = val == "open";
+		else if (key == "eq")
+		{
+			eqOn = val.rfind("on", 0) == 0;
+			std::vector<float> v;
+			for (size_t p = val.find(','); p != std::string::npos; p = val.find(',', p + 1)) v.push_back((float)atof(val.c_str() + p + 1));
+			auto clampDb = [](float d) { return d < -12 ? -12.0f : d > 12 ? 12.0f : d; };
+			if (!v.empty()) eqPreamp = clampDb(v[0]);
+			for (size_t k = 1; k < v.size() && k <= 10; ++k) eqGains[k - 1] = clampDb(v[k]);
+		}
 		else if (key == "songSort")
 		{
 			int k = atoi(val.c_str());
@@ -2781,6 +2846,7 @@ void App::loadState()
 		audioOk = player.init(0, 0);
 	}
 	if (audioOk) player.setVolume(volume);
+	applyEq();
 	loadLibrary();   // needs the music folders read above
 	if (data.empty()) return;
 

@@ -25,6 +25,7 @@ enum class Hit
 	QueueRow, QueueRemove, QueueClear, QueueUndo,
 	SortHeader, SortMenu,
 	SearchField, SearchClear, SearchArtist, SearchAlbum, SearchRow,
+	EqToggle, EqReset, EqSlider,
 	LibraryRow,
 	OpenLibraryFolder, ChangeLibraryFolder, AddMusicFolder, RemoveMusicFolder, OpenMusicFolder, ShowHidden,
 	LibTabAlbums, LibTabArtists, LibTabSongs,
@@ -161,6 +162,14 @@ private:
 	void drawSearchField();
 	void drawSearch(const Rect& area);
 	Rect gearRect;
+
+	// ---- equalizer (the filters live in the Core's Equalizer; this is what the sliders show)
+	bool eqOn = false;
+	float eqPreamp = 0;
+	float eqGains[10] = {};
+	Rect eqTracks[11];                     // slider tracks: 0 = preamp, 1..10 = bands
+	void applyEq();                        // push all of the above to player.equalizer()
+	void setEqValue(int slider, float dB); // snapped to 0.5 dB steps, sticky at 0
 	void hot(const Rect& r, Hit id, int index = -1);
 	bool hovered(Hit id, int index = -1) const { return hoverHit == id && (index < 0 || hoverIndex == index); }
 	bool pressed(Hit id, int index = -1) const { return pressHit == id && hovered(id, index); }
